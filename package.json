@@ -1,0 +1,24 @@
+{
+  "name": "trees",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Biologically-plausible tree growth simulation with a decoupled three.js debug renderer.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.4",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0",
+    "vite-plugin-singlefile": "^2.0.3",
+    "vitest": "^2.0.5"
+  },
+  "dependencies": {
+    "three": "^0.167.0"
+  }
+}

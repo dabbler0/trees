@@ -1,0 +1,198 @@
+import type { SimulationHistory, SimulationParams } from './model/types';
+import { defaultParams } from './sim/params';
+import { deserializeHistory, runSimulation, serializeHistory } from './sim/simulate';
+import { TreeDebugRenderer, COLOR_MODES, type ColorModeId, type HoverInfo } from './render/debugRenderer';
+
+const canvasContainer = document.getElementById('canvas-container') as HTMLDivElement;
+const statusEl = document.getElementById('status') as HTMLDivElement;
+const scrubber = document.getElementById('scrubber') as HTMLInputElement;
+const yearLabel = document.getElementById('year-label') as HTMLSpanElement;
+const metricsLine = document.getElementById('metrics-line') as HTMLDivElement;
+const tooltip = document.getElementById('tooltip') as HTMLDivElement;
+const thicknessToggle = document.getElementById('thickness-toggle') as HTMLInputElement;
+const leavesToggle = document.getElementById('leaves-toggle') as HTMLInputElement;
+const colorModeSelect = document.getElementById('color-mode-select') as HTMLSelectElement;
+const legend = document.getElementById('legend') as HTMLDivElement;
+const yearsInput = document.getElementById('years-input') as HTMLInputElement;
+const seedInput = document.getElementById('seed-input') as HTMLInputElement;
+const simulateBtn = document.getElementById('simulate-btn') as HTMLButtonElement;
+const downloadBtn = document.getElementById('download-btn') as HTMLButtonElement;
+const uploadBtn = document.getElementById('upload-btn') as HTMLButtonElement;
+const uploadInput = document.getElementById('upload-input') as HTMLInputElement;
+const playBtn = document.getElementById('play-btn') as HTMLButtonElement;
+const resetBtn = document.getElementById('reset-btn') as HTMLButtonElement;
+
+const renderer = new TreeDebugRenderer(canvasContainer);
+
+for (const mode of COLOR_MODES) {
+  const opt = document.createElement('option');
+  opt.value = mode.id;
+  opt.textContent = mode.label;
+  colorModeSelect.appendChild(opt);
+}
+
+let history: SimulationHistory | null = null;
+let playTimer: number | null = null;
+
+function setStatus(text: string | null): void {
+  if (text === null) {
+    statusEl.style.display = 'none';
+  } else {
+    statusEl.style.display = 'block';
+    statusEl.textContent = text;
+  }
+}
+
+function updateLegend(): void {
+  const mode = COLOR_MODES.find((m) => m.id === colorModeSelect.value) ?? COLOR_MODES[0];
+  legend.textContent = mode.description;
+}
+
+function showAtIndex(index: number): void {
+  if (!history) return;
+  const state = history.states[index];
+  renderer.setState(state);
+  yearLabel.textContent = `Year ${state.year}`;
+  const m = state.metrics;
+  metricsLine.textContent =
+    `H=${m.height.toFixed(2)}m  DBH=${(m.dbh * 100).toFixed(1)}cm  ` +
+    `crownBase=${m.crownBaseHeight.toFixed(2)}m  crownWidth=${m.crownWidth.toFixed(2)}m  ` +
+    `leafArea=${m.totalLeafArea.toFixed(1)}m²  segments=${state.segments.length}  buds=${state.buds.length}`;
+}
+
+function loadHistory(h: SimulationHistory): void {
+  history = h;
+  scrubber.max = String(h.states.length - 1);
+  scrubber.value = String(h.states.length - 1);
+  const finalMetrics = h.states[h.states.length - 1].metrics;
+  renderer.frame(finalMetrics.height, finalMetrics.crownWidth);
+  showAtIndex(h.states.length - 1);
+}
+
+async function simulate(params: SimulationParams, years: number): Promise<void> {
+  setStatus(`Growing tree for ${years} years…`);
+  // Yield to the browser so the status message actually paints before the
+  // (synchronous, potentially multi-second) simulation runs.
+  await new Promise((r) => setTimeout(r, 20));
+  const h = runSimulation(params, years);
+  loadHistory(h);
+  setStatus(null);
+}
+
+simulateBtn.addEventListener('click', () => {
+  const years = Math.max(1, Math.min(500, Number(yearsInput.value) || 110));
+  const seed = Math.max(0, Number(seedInput.value) || 0);
+  void simulate({ ...defaultParams, seed }, years);
+});
+
+downloadBtn.addEventListener('click', () => {
+  if (!history) return;
+  const blob = new Blob([serializeHistory(history)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `tree-history-${history.species.replace(/\s+/g, '-')}-${history.states.length - 1}yr.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+uploadBtn.addEventListener('click', () => uploadInput.click());
+uploadInput.addEventListener('change', () => {
+  const file = uploadInput.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const h = deserializeHistory(String(reader.result));
+      loadHistory(h);
+    } catch (err) {
+      alert(`Could not load that file as a simulation history: ${(err as Error).message}`);
+    }
+  };
+  reader.readAsText(file);
+  uploadInput.value = '';
+});
+
+scrubber.addEventListener('input', () => {
+  stopPlayback();
+  showAtIndex(Number(scrubber.value));
+});
+
+thicknessToggle.addEventListener('change', () => renderer.setOptions({ showThickness: thicknessToggle.checked }));
+leavesToggle.addEventListener('change', () => renderer.setOptions({ showLeaves: leavesToggle.checked }));
+colorModeSelect.addEventListener('change', () => {
+  renderer.setOptions({ colorMode: colorModeSelect.value as ColorModeId });
+  updateLegend();
+});
+
+function stopPlayback(): void {
+  if (playTimer !== null) {
+    clearInterval(playTimer);
+    playTimer = null;
+    playBtn.textContent = '▶ Play';
+  }
+}
+
+playBtn.addEventListener('click', () => {
+  if (playTimer !== null) {
+    stopPlayback();
+    return;
+  }
+  playBtn.textContent = '⏸ Pause';
+  playTimer = window.setInterval(() => {
+    if (!history) return;
+    const next = Number(scrubber.value) + 1;
+    if (next >= history.states.length) {
+      stopPlayback();
+      return;
+    }
+    scrubber.value = String(next);
+    showAtIndex(next);
+  }, 120);
+});
+
+resetBtn.addEventListener('click', () => {
+  stopPlayback();
+  scrubber.value = '0';
+  showAtIndex(0);
+});
+
+function formatVec3(v: readonly [number, number, number]): string {
+  return `(${v[0].toFixed(2)}, ${v[1].toFixed(2)}, ${v[2].toFixed(2)})`;
+}
+
+function formatHover(info: HoverInfo): string {
+  if (info.kind === 'segment') {
+    const s = info.segment;
+    const lines = [
+      `Branch segment #${s.id}`,
+      `order: ${s.order}   alive: ${s.alive}`,
+      `created year: ${s.createdYear}`,
+      `start: ${formatVec3(s.start)}`,
+      `end:   ${formatVec3(s.end)}`,
+      `radius: ${(s.baseRadius * 1000).toFixed(1)}mm → ${(s.tipRadius * 1000).toFixed(1)}mm`,
+      `leaf area: ${s.leafArea.toFixed(3)} m²`,
+      `light exposure: ${(s.lightExposure * 100).toFixed(0)}%`,
+      `hydraulic resistance: ${s.hydraulicResistance.toFixed(1)}`,
+    ];
+    if (info.tipBud) {
+      const b = info.tipBud;
+      lines.push('--- tip bud ---', `status: ${b.status}`, `vigor: ${(b.vigor * 100).toFixed(0)}%`, `hormonal vigor: ${(b.hormonalVigor * 100).toFixed(0)}%`);
+    }
+    return lines.join('\n');
+  }
+  const l = info.leaf;
+  return [`Leaf #${l.id}`, `on segment: ${l.segmentId}`, `age: ${l.ageYears}yr`, `area: ${(l.area * 10000).toFixed(1)} cm²`, `position: ${formatVec3(l.position)}`].join('\n');
+}
+
+renderer.onHover = (info) => {
+  if (!info) {
+    tooltip.style.display = 'none';
+    return;
+  }
+  tooltip.style.display = 'block';
+  tooltip.textContent = formatHover(info);
+};
+
+updateLegend();
+void simulate({ ...defaultParams, seed: Number(seedInput.value) || 1 }, Number(yearsInput.value) || 110);

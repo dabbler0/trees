@@ -1,0 +1,57 @@
+import type { SimulationParams } from '../model/types';
+
+/**
+ * Default parameter set for a generic, moderately fast-growing broadleaf
+ * tree. Values are informed by widely-cited forestry/plant-physiology
+ * figures (see README "Biological basis" section for citations):
+ *  - height:DBH slenderness ratios of ~50-100 for stable, forest/open
+ *    grown trees (Wang et al.; various national forest inventory models);
+ *  - the pipe model / Da Vinci rule for sapwood cross-section vs. distal
+ *    leaf area (Shinozaki et al. 1964);
+ *  - the hydraulic-limitation hypothesis for asymptotic tree height
+ *    (Koch, Sillett, Jennings & Davis 2004, "The limits to tree height");
+ *  - Beer-Lambert canopy light attenuation and shade-driven self-pruning,
+ *    standard in forest canopy models.
+ *
+ * These are starting points meant to be tuned so the high-level allometry
+ * tests in tests/ pass across the whole sapling-to-old-growth age range;
+ * see tests/allometry.test.ts for the acceptance ranges.
+ */
+export const defaultParams: SimulationParams = {
+  seed: 1,
+
+  baseInternodeLength: 0.15,
+  maxInternodeLength: 0.62,
+  juvenileRampYears: 7,
+
+  hydraulicResistanceHalfVigor: 150000,
+
+  branchingAngle: (55 * Math.PI) / 180,
+  phyllotacticAngle: (137.508 * Math.PI) / 180, // golden angle: real spiral phyllotaxis
+  nodesPerInternode: 2,
+  budBreakProbability: 0.4,
+  apicalVigorRetention: 0.999,
+  lateralAgingPenalty: 0.0022,
+  lateralVigorRatio: 0.56,
+
+  gravitropicDroop: 0.12,
+  phototropicPull: 0.06,
+
+  pipeModelRatio: 0.00032,
+  mechanicalThickeningFactor: 0.0013,
+
+  leafAreaPerShootLength: 0.18,
+  leafLifespanYears: 2,
+  lightExtinctionCoefficient: 3.5,
+  senescenceLightThreshold: 0.16,
+  senescenceYearsTolerance: 3,
+  abscissionYears: 4,
+  maxActiveBuds: 1100,
+
+  respirationPerWoodyVolume: 90,
+  carbonCostPerMeterGrowth: 0.04,
+};
+
+export function cloneParams(p: SimulationParams): SimulationParams {
+  return { ...p };
+}
