@@ -121,15 +121,15 @@ export const PARAM_CONTROLS: ParamControlDef[] = [
   ),
 
   // --- Species traits: the sort of thing that differs between species ---
-  logScale(
-    'hydraulicResistanceHalfVigor',
+  linear(
+    'heightVigorHalfHeight',
     'Hydraulic limit (mature height)',
-    "Path resistance at which growth vigor is halved. The main knob for a species' asymptotic height: lower = a shorter, hydraulically-limited species; higher = a taller one.",
+    "Height (m) at which hydraulic limitation -- the increasing difficulty of supplying water against gravity as a shoot gets taller -- has cut both its growth vigor and its foliage's photosynthetic efficiency in half. The main knob for a species' asymptotic height: lower = a shorter, more hydraulically-limited species; higher = a taller one.",
     'species',
-    20_000,
-    600_000,
-    0.02,
-    (v) => `${Math.round(v / 1000)}k`
+    3,
+    40,
+    1,
+    (v) => `${v}m`
   ),
   linear(
     'maxInternodeLength',

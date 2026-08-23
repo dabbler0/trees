@@ -99,6 +99,46 @@ export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
 const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
 
 /**
+ * Hydraulic-limitation factor from absolute height, in [0, 1], applied
+ * both to a bud's own realized vigor and to its foliage's carbon-supply
+ * efficiency (see stepYear). A plain saturating hyperbola
+ * (`half / (half + height)`) has a very long, slowly-decaying tail --
+ * even well past `half`, its residual value is still large enough that,
+ * given enough standing carbon surplus, a tree can keep creeping upward
+ * for a very long time, making `half` a weak, mushy suggestion rather
+ * than a real asymptotic ceiling. Raising the ratio to a power > 1
+ * keeps the same halfway point (factor = 0.5 exactly at height = half)
+ * but sharpens the falloff into a real knee, so heightVigorHalfHeight
+ * reads as an actual, end-to-end-calibratable "this is roughly how tall
+ * this species gets" control instead of just a growth-rate nudge.
+ */
+const HEIGHT_LIMIT_SHARPNESS = 2.5;
+function heightVigorFactor(height: number, halfHeight: number, sharpness = HEIGHT_LIMIT_SHARPNESS): number {
+  const ratio = Math.max(0, height) / halfHeight;
+  return 1 / (1 + Math.pow(ratio, sharpness));
+}
+
+/**
+ * The carbon-supply-side sibling of heightVigorFactor, deliberately
+ * gentler (a plain hyperbola, and a taller effective half-height) rather
+ * than sharing its sharpened curve. The two interact through a real
+ * feedback loop that a shared, equally-sharp curve makes too strong: as
+ * the crown's own base rises (self-pruning, elsewhere in stepYear), the
+ * *average* remaining leaf ends up higher even without the tree growing
+ * any taller, which would lower supply, which would kill more low-vigor
+ * buds, which raises the crown further, and so on -- compounding into
+ * exactly the kind of sharp population collapse the self-thinning ramp
+ * (selfThinningOnsetFraction/selfThinningMaxFraction) exists to prevent,
+ * rather than the gradual old-growth decline a real tree's canopy shows.
+ * A softer, later-biting efficiency curve keeps the height penalty doing
+ * its calibration job on vigor/growth without also destabilizing the
+ * whole-tree carbon budget on its own.
+ */
+function heightEfficiencyFactor(height: number, halfHeight: number): number {
+  return heightVigorFactor(height, halfHeight * 1.8, 1);
+}
+
+/**
  * Phototropic straightening scales with an axis's own persistent
  * hormonal vigor, not with a hardcoded "is this the trunk" check: a
  * still-dominant axis (whatever its branch order, or how it came to be
@@ -193,10 +233,10 @@ function applyDroop(dir: Vec3, hormonalVigor: number, params: SimulationParams):
  *     bigger trees spend more of their assimilate just staying alive).
  *  2. Every active bud gets a demand weight = hormonalVigor (an
  *     apical-dominance / auxin-gradient trait, decayed on branching) x
- *     hydraulic factor (saturating with the bud's cumulative path
- *     resistance -- the hydraulic-limitation-hypothesis mechanism for a
- *     height plateau, Koch et al. 2004). The year's net carbon is then
- *     divided across all demanding buds in proportion to their weight,
+ *     height-based hydraulic factor (saturating with the bud's own
+ *     absolute height -- the hydraulic-limitation-hypothesis mechanism
+ *     for a height plateau, Koch et al. 2004). The year's net carbon is
+ *     then divided across all demanding buds in proportion to their weight,
  *     exactly like real source-sink carbon allocation, which is what
  *     keeps total new growth bounded by whole-tree photosynthetic
  *     capacity instead of letting local rules alone blow up.
@@ -231,11 +271,24 @@ export function stepYear(
   // of standing wood). This is what ultimately caps how much total new
   // growth the tree can afford this year, regardless of how many buds
   // would individually like to grow. ---
+  // Foliage efficiency also declines continuously with absolute height,
+  // same half-height and same physical driver as the vigor factor below
+  // (hydraulicFactor): the higher a leaf sits above the ground, the
+  // harder it is to keep it supplied with water against gravity and
+  // xylem resistance, so its realized gas exchange/photosynthesis is
+  // reduced even where light is plentiful (Koch et al. 2004 document
+  // exactly this in the very tallest redwood foliage). This is what
+  // makes heightVigorHalfHeight a real, end-to-end asymptotic-height
+  // control rather than just a growth-rate throttle: a species with a
+  // low half-height both grows more slowly up high *and* earns
+  // proportionally less carbon from whatever foliage it does have up
+  // there, compounding into a firmer height ceiling.
   let effectiveSunlitLeafArea = 0;
   for (const s of prev.segments) {
     if (s.leafArea <= 0) continue;
     const mid: Vec3 = [(s.start[0] + s.end[0]) / 2, (s.start[1] + s.end[1]) / 2, (s.start[2] + s.end[2]) / 2];
-    effectiveSunlitLeafArea += s.leafArea * lightProfile.exposureAt(mid);
+    const heightEfficiency = heightEfficiencyFactor(mid[1], params.heightVigorHalfHeight);
+    effectiveSunlitLeafArea += s.leafArea * lightProfile.exposureAt(mid) * heightEfficiency;
   }
   // Smoothed rather than this year's raw value (see GrowthContext.
   // smoothedCarbonSupply): a whole tree's carbon economy carries reserves
@@ -293,9 +346,7 @@ export function stepYear(
   for (const bud of buds) {
     if (bud.status === 'dead') continue;
 
-    const segment = segments.get(bud.segmentId);
-    const resistance = segment?.hydraulicResistance ?? 0;
-    const hydraulicFactor = params.hydraulicResistanceHalfVigor / (params.hydraulicResistanceHalfVigor + resistance);
+    const hydraulicFactor = heightVigorFactor(bud.position[1], params.heightVigorHalfHeight);
     const exposure = lightProfile.exposureAt(bud.position);
     const demand = Math.max(0, Math.min(1, bud.hormonalVigor * hydraulicFactor));
 

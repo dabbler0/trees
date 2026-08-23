@@ -24,9 +24,9 @@ export const defaultParams: SimulationParams = {
   maxInternodeLength: 0.62,
   juvenileRampYears: 7,
 
-  hydraulicResistanceHalfVigor: 150000,
+  heightVigorHalfHeight: 18,
 
-  branchingAngle: (68 * Math.PI) / 180,
+  branchingAngle: (72 * Math.PI) / 180,
   phyllotacticAngle: (137.508 * Math.PI) / 180, // golden angle: real spiral phyllotaxis
   nodesPerInternode: 3,
   budBreakProbability: 0.55,
@@ -35,7 +35,7 @@ export const defaultParams: SimulationParams = {
   trunkAgingPenalty: 0.0009,
   lateralVigorRatio: 0.56,
   coDominanceProbability: 0.025,
-  coDominantVigorRatio: 0.85,
+  coDominantVigorRatio: 0.9,
 
   gravitropicDroop: 0.16,
   phototropicPull: 0.045,
@@ -51,7 +51,7 @@ export const defaultParams: SimulationParams = {
   lightExtinctionCoefficient: 3.5,
   senescenceLightThreshold: 0.16,
   senescenceYearsTolerance: 3,
-  maxActiveBuds: 1100,
+  maxActiveBuds: 700,
   selfThinningOnsetFraction: 0.4,
   selfThinningMaxFraction: 0.12,
   abscissionYears: 4,
@@ -59,7 +59,7 @@ export const defaultParams: SimulationParams = {
   lowBranchOcclusionAge: 15,
   lowBranchOcclusionHeight: 1.4,
 
-  respirationPerWoodyVolume: 90,
+  respirationPerWoodyVolume: 70,
   carbonCostPerMeterGrowth: 0.04,
 };
 

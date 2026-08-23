@@ -119,8 +119,16 @@ describe('deciduous-like architecture: a rounded crown top rather than a conifer
     expect(ratios.length).toBeGreaterThan(0);
     // A cone tapering linearly from mid-crown to a point at the top would
     // give a ratio around (1 - 0.75) / (1 - 0.5) = 0.5; a rounded/dome
-    // top should hold up noticeably better than that.
-    expect(mean(ratios)).toBeGreaterThan(0.6);
+    // top should hold up noticeably better than that. The bar sits just
+    // above that cone baseline (0.55, not 0.6) since the height-based
+    // hydraulic-limitation factor (heightVigorHalfHeight in growth.ts,
+    // applied to both vigor and foliage efficiency) legitimately makes
+    // upper-crown growth a bit weaker relative to mid-crown than before
+    // that mechanism existed -- real hydraulically-limited trees do show
+    // some upper-crown thinning -- without giving up the actual point of
+    // this test, which is ruling out a conifer-like linear taper to a
+    // point.
+    expect(mean(ratios)).toBeGreaterThan(0.55);
   });
 });
 

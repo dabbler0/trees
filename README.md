@@ -120,13 +120,26 @@ Each simulated year:
    separate "trunk" concept; whichever axis happens to retain the most
    vigor over time is the trunk, an emergent outcome instead of a
    hardcoded label.
-4. **Hydraulic limitation** -- a bud's realized vigor is scaled by
-   `R_half / (R_half + pathResistance)`, where path resistance
-   accumulates as `length / cross-sectional area` from root to tip. This
-   is the mechanism behind Koch, Sillett, Jennings & Davis's
-   "hydraulic-limitation hypothesis" (*Nature* 428, 2004): height growth
-   decelerates and plateaus as a tree approaches its size limit, without
-   ever literally killing the leader.
+4. **Hydraulic limitation** -- both a bud's realized vigor and its own
+   foliage's carbon-supply efficiency are scaled continuously by a
+   sharpened saturating curve of the bud/leaf's *absolute height*
+   (`heightVigorHalfHeight`, the height at which the factor is 0.5),
+   standing in for the increasing difficulty of pulling water up against
+   gravity and xylem resistance as a shoot gets taller. This is the
+   mechanism behind Koch, Sillett, Jennings & Davis's
+   "hydraulic-limitation hypothesis" (*Nature* 428, 2004), which also
+   documents reduced gas exchange in the very tallest foliage --
+   height growth decelerates and plateaus as a tree approaches its
+   species' asymptotic height, without ever literally killing the
+   leader. Keying this on absolute height rather than on accumulated
+   path *resistance* (radius/length along the actual branch skeleton) is
+   what makes the half-height parameter directly, predictably
+   calibratable end-to-end into a real terminal-height control, rather
+   than a knob whose effect depends unpredictably on how thick the
+   simulated trunk happens to end up. `hydraulicResistance` is still
+   tracked per segment (see "Secondary growth" below) for the pipe model
+   and the "Hydraulic resistance" debug color mode -- it's a real,
+   physically meaningful quantity -- it just isn't what throttles vigor.
 5. **Self-pruning / senescence** -- a bud whose *local* light exposure
    stays below threshold for several years (or ranks in the shadiest
    ~10% once the crown is near carrying capacity -- a Reineke
@@ -277,15 +290,29 @@ conifer-like) across many seeds, since forking is stochastic:
 ## Renderer
 
 `TreeDebugRenderer` draws one `TreeState` at a time via two
-`THREE.InstancedMesh`es (branch cylinders, leaf spheres) so tens of
-thousands of segments stay within two draw calls. Options:
+`THREE.InstancedMesh`es (branch cylinders, leaf spheres/planes) so tens
+of thousands of segments stay within two draw calls. Options:
 
 - `showThickness` -- true tapered-radius cylinders vs. a uniform thin
   skeleton line;
 - `showLeaves` -- toggle the leaf point cloud;
 - `colorMode` -- `natural`, `branchOrder`, `age`, `lightExposure`,
-  `hydraulicStress`, or `vigor` (bud vigor at growing tips). Adding a new
-  debug signal is one entry in `src/render/colorSchemes.ts`.
+  `hydraulicStress`, `vigor` (bud vigor at growing tips), or `photo`.
+  Adding a new debug signal is one entry in `src/render/colorSchemes.ts`.
+
+**Photo mode** swaps the debug leaf spheres for textured, alpha-cutout
+leaf-shaped planes (a leaf silhouette drawn once to a canvas at load
+time -- see `makeLeafTexture` in `debugRenderer.ts` -- since the whole
+app is one self-contained HTML file with no external image assets) and
+turns on real-time shadows: the sun becomes a shadow-casting
+`THREE.DirectionalLight` aimed along the tree's actual simulated sun
+direction (`sunZenithAngle`/`sunAzimuth`), and because the leaf
+material's cutout is expressed via `alphaTest` against that same
+texture, three.js's shadow-map depth pass respects it automatically --
+the canopy casts real leaf-shaped, dappled shadows rather than solid
+blob ones, with no extra work beyond setting `alphaTest`. Every other
+color mode leaves `castShadow`/`receiveShadow` off, so switching into
+photo mode is the only time this costs anything.
 
 Hover picking is wired through `renderer.onHover(info)`, which receives
 the full underlying `BranchSegment`/`Bud` or `Leaf` object (not a

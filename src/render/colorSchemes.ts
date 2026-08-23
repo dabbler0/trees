@@ -8,7 +8,7 @@ import type { Bud, BranchSegment } from '../model/types';
  * adding one function here and one entry in COLOR_MODES, with nothing
  * else in the renderer needing to change.
  */
-export type ColorModeId = 'natural' | 'branchOrder' | 'age' | 'lightExposure' | 'hydraulicStress' | 'vigor';
+export type ColorModeId = 'natural' | 'branchOrder' | 'age' | 'lightExposure' | 'hydraulicStress' | 'vigor' | 'photo';
 
 export interface ColorModeContext {
   segment: BranchSegment;
@@ -81,6 +81,21 @@ export const COLOR_MODES: ColorMode[] = [
     label: 'Bud vigor (tips only)',
     description: 'Realized growth vigor of the bud currently at this segment\'s tip, if any (blue = starved, red = vigorous); gray elsewhere.',
     color: ({ tipBud }) => (tipBud ? heatmap(tipBud.vigor) : new THREE.Color('#888888')),
+  },
+  {
+    id: 'photo',
+    label: 'Photo',
+    description:
+      'Textured, leaf-shaped foliage casting real leaf-shaped shadows through the canopy (the debug renderer\'s attempt at a natural look), same bark coloring as Natural for the wood.',
+    // Branches use the same coloring as 'natural'; the renderer swaps the
+    // *leaf* geometry/material entirely for this mode (textured,
+    // shadow-casting leaf sprites) rather than expressing it through this
+    // per-segment color function, which only ever governs branch color.
+    color: ({ segment, currentYear }) => {
+      if (!segment.alive) return DEAD_WOOD_COLOR.clone();
+      const age = currentYear - segment.createdYear;
+      return age <= 1 ? YOUNG_WOOD_COLOR.clone() : WOOD_COLOR.clone();
+    },
   },
 ];
 

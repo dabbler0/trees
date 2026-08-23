@@ -171,11 +171,31 @@ export interface SimulationParams {
 
   // --- Hydraulic limitation (why height plateaus) ---
   /**
-   * Reference hydraulic path resistance at which vigor is reduced to 50%.
-   * Path resistance accumulates as (length / radius^4) along the trunk, so
-   * this constant sets, in effect, the species' asymptotic height.
+   * Height (m) at which the hydraulic-limitation vigor/efficiency factor
+   * is reduced to 50% (a sharpened saturating curve -- see
+   * heightVigorFactor in growth.ts), applied continuously (never a hard
+   * cutoff) both to a bud's own realized vigor and to how efficiently
+   * foliage at that height contributes to the whole tree's carbon supply
+   * (see stepYear in growth.ts). This is a direct stand-in
+   * for water-potential-driven hydraulic limitation -- the taller a
+   * shoot's path to the ground, the harder it is to pull water up
+   * against gravity and xylem resistance, so both its own growth *and*
+   * its leaves' realized gas exchange/photosynthesis decline gradually
+   * with absolute height (Koch, Sillett, Jennings & Davis 2004, "The
+   * limits to tree height," documents reduced leaf-level gas exchange in
+   * the very tallest foliage). Keying this directly on height instead of
+   * on accumulated path *resistance* (radius/length along the actual
+   * branch skeleton, which the older mechanism used) makes it a simple,
+   * predictable, and correctly-calibratable control over a species'
+   * asymptotic mature height: half-height IS, roughly, the height at
+   * which growth visibly starts slowing down. `hydraulicResistance` is
+   * still tracked per segment (pipeModel.ts) for the pipe model /
+   * mechanical thickening and the "hydraulicStress" debug color mode --
+   * it's a real, physically meaningful quantity -- it just no longer
+   * independently throttles vigor now that this height-based factor does
+   * that job in a way that's actually tunable end-to-end.
    */
-  hydraulicResistanceHalfVigor: number;
+  heightVigorHalfHeight: number;
 
   // --- Branching / phyllotaxis ---
   /** Divergence (branching) angle from the parent axis, radians. */

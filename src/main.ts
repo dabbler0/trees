@@ -1,6 +1,7 @@
 import type { SimulationHistory, SimulationParams } from './model/types';
 import { defaultParams } from './sim/params';
 import { deserializeHistory, runSimulation, serializeHistory } from './sim/simulate';
+import { sunDirection } from './sim/sun';
 import { TreeDebugRenderer, COLOR_MODES, type ColorModeId, type HoverInfo } from './render/debugRenderer';
 import { PARAM_CONTROLS } from './paramControls';
 
@@ -137,6 +138,9 @@ function loadHistory(h: SimulationHistory): void {
   scrubber.value = String(h.states.length - 1);
   const finalMetrics = h.states[h.states.length - 1].metrics;
   renderer.frame(finalMetrics.height, finalMetrics.crownWidth);
+  // "Photo" mode's shadows follow the actual sun angle this tree was
+  // grown under, not a fixed studio-light position.
+  renderer.setSunDirection(sunDirection(h.params));
   showAtIndex(h.states.length - 1);
 }
 
