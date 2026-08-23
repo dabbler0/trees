@@ -2,6 +2,7 @@ import type { SimulationHistory, SimulationParams } from './model/types';
 import { defaultParams } from './sim/params';
 import { deserializeHistory, runSimulation, serializeHistory } from './sim/simulate';
 import { TreeDebugRenderer, COLOR_MODES, type ColorModeId, type HoverInfo } from './render/debugRenderer';
+import { PARAM_CONTROLS } from './paramControls';
 
 const canvasContainer = document.getElementById('canvas-container') as HTMLDivElement;
 const statusEl = document.getElementById('status') as HTMLDivElement;
@@ -21,6 +22,9 @@ const uploadBtn = document.getElementById('upload-btn') as HTMLButtonElement;
 const uploadInput = document.getElementById('upload-input') as HTMLInputElement;
 const playBtn = document.getElementById('play-btn') as HTMLButtonElement;
 const resetBtn = document.getElementById('reset-btn') as HTMLButtonElement;
+const envControls = document.getElementById('env-controls') as HTMLDivElement;
+const speciesControls = document.getElementById('species-controls') as HTMLDivElement;
+const resetParamsBtn = document.getElementById('reset-params-btn') as HTMLButtonElement;
 
 const renderer = new TreeDebugRenderer(canvasContainer);
 
@@ -30,6 +34,73 @@ for (const mode of COLOR_MODES) {
   opt.textContent = mode.label;
   colorModeSelect.appendChild(opt);
 }
+
+// --- Species & environment parameter sliders ---
+// Overrides are collected here and merged over defaultParams the next
+// time a tree is grown (via the "Grow new tree" button) -- they don't
+// retroactively change an already-grown tree, same as the seed/years
+// inputs above.
+const paramOverrides: Partial<SimulationParams> = {};
+
+function buildParamSlider(container: HTMLElement, def: (typeof PARAM_CONTROLS)[number]): void {
+  const row = document.createElement('div');
+  row.className = 'slider-row';
+
+  const labelRow = document.createElement('div');
+  labelRow.className = 'slider-label-row';
+  const label = document.createElement('label');
+  label.textContent = def.label;
+  label.htmlFor = `param-${def.key}`;
+  const valueEl = document.createElement('span');
+  valueEl.className = 'slider-value';
+  labelRow.append(label, valueEl);
+
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.id = `param-${def.key}`;
+  input.min = String(def.min);
+  input.max = String(def.max);
+  input.step = String(def.step);
+
+  const desc = document.createElement('div');
+  desc.className = 'slider-desc';
+  desc.textContent = def.description;
+
+  const applyDisplay = (paramValue: number): void => {
+    valueEl.textContent = def.format(paramValue);
+  };
+
+  const setFromParamValue = (paramValue: number): void => {
+    input.value = String(def.toSlider(paramValue));
+    applyDisplay(paramValue);
+  };
+
+  setFromParamValue(defaultParams[def.key] as number);
+
+  input.addEventListener('input', () => {
+    const paramValue = def.toParam(Number(input.value));
+    (paramOverrides as Record<string, number>)[def.key] = paramValue;
+    applyDisplay(paramValue);
+  });
+
+  // Expose so the reset button can restore the displayed slider position.
+  (input as HTMLInputElement & { __setFromParamValue?: (v: number) => void }).__setFromParamValue = setFromParamValue;
+
+  row.append(labelRow, input, desc);
+  container.appendChild(row);
+}
+
+for (const def of PARAM_CONTROLS) {
+  buildParamSlider(def.group === 'environment' ? envControls : speciesControls, def);
+}
+
+resetParamsBtn.addEventListener('click', () => {
+  for (const key of Object.keys(paramOverrides)) delete (paramOverrides as Record<string, unknown>)[key];
+  for (const def of PARAM_CONTROLS) {
+    const input = document.getElementById(`param-${def.key}`) as (HTMLInputElement & { __setFromParamValue?: (v: number) => void }) | null;
+    input?.__setFromParamValue?.(defaultParams[def.key] as number);
+  }
+});
 
 let history: SimulationHistory | null = null;
 let playTimer: number | null = null;
@@ -82,7 +153,7 @@ async function simulate(params: SimulationParams, years: number): Promise<void> 
 simulateBtn.addEventListener('click', () => {
   const years = Math.max(1, Math.min(500, Number(yearsInput.value) || 110));
   const seed = Math.max(0, Number(seedInput.value) || 0);
-  void simulate({ ...defaultParams, seed }, years);
+  void simulate({ ...defaultParams, ...paramOverrides, seed }, years);
 });
 
 // A saved history is already a compact per-year diff (see historyCodec.ts),
@@ -215,4 +286,4 @@ renderer.onHover = (info) => {
 };
 
 updateLegend();
-void simulate({ ...defaultParams, seed: Number(seedInput.value) || 1 }, Number(yearsInput.value) || 110);
+void simulate({ ...defaultParams, ...paramOverrides, seed: Number(seedInput.value) || 1 }, Number(yearsInput.value) || 110);

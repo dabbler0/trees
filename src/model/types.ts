@@ -218,6 +218,30 @@ export interface SimulationParams {
   gravitropicDroop: number;
   /** How strongly growth direction re-orients toward vertical/light (0..1/yr). */
   phototropicPull: number;
+  /**
+   * Sun zenith angle, radians from straight overhead (0 = directly
+   * overhead, as at midday near the equator; larger = a lower, more
+   * oblique sun, as at high latitude or in a winter/morning/evening
+   * light). Purely an environmental/site setting, not a species trait.
+   * Only matters together with heliotropismStrength below -- an
+   * overhead sun (0) gives zero heliotropic bending regardless of that
+   * strength, since there is no consistent horizontal direction to bend
+   * toward.
+   */
+  sunZenithAngle: number;
+  /** Compass direction (radians) the sun is in, when sunZenithAngle > 0. */
+  sunAzimuth: number;
+  /**
+   * How strongly a shaded shoot bends its growth direction toward the
+   * sun (heliotropism/phototropism proper, distinct from the vertical
+   * negative-gravitropism straightening above). Real shoots in
+   * directional light do bend toward it, especially when locally shaded
+   * and especially under a low, oblique sun where the light gradient
+   * across the canopy is more pronounced -- this is what makes the
+   * canopy lean and thicken toward the sun rather than staying
+   * perfectly radially symmetric.
+   */
+  heliotropismStrength: number;
 
   // --- Secondary growth (thickening) ---
   /**

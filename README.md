@@ -133,9 +133,40 @@ Each simulated year:
    conifer's permanent one, letting fresher branches eventually rival an
    old axis's vigor and round out the crown top rather than tapering it
    to a point indefinitely.
+10. **Heliotropism** -- under a non-overhead sun (`sunZenithAngle > 0`),
+    a shoot's growth target shifts from straight up to "mostly up,
+    tilted somewhat toward the sun", more so once it's locally shaded.
+    The tilt is capped well under a full blend toward the sun direction
+    so it always stays a *lean* layered on top of gravitropism, never a
+    replacement for it (a real shoot doesn't grow flat toward the
+    horizon chasing the sun). At `sunZenithAngle = 0` (the default) this
+    has no effect at all -- `sin(0) = 0` -- so the whole mechanism is
+    inert unless the sun angle is actually moved off overhead.
 
 All constants live in one place, `src/sim/params.ts`, documented with the
 literature/reasoning behind each.
+
+## Adjusting parameters in the UI
+
+The "Species & environment parameters" panel exposes a curated subset of
+`SimulationParams` as sliders -- the ones a real environment or species
+would plausibly vary, rather than every internal tuning constant (see
+`src/paramControls.ts` for the list and the reasoning behind each range):
+
+- **Environment** (site/season, not a species trait): sun angle from
+  overhead, sun compass direction, and heliotropism strength.
+- **Species traits**: hydraulic limit (mature height), growth rate,
+  branching angle, droop/weeping habit, foliage retention (deciduous vs.
+  evergreen-like), shade tolerance, canopy self-shading density, forking
+  tendency, foliage density per shoot, and trunk taper/wind-firmness.
+
+Sliders update a pending set of overrides shown live next to each label;
+click "Grow new tree" to actually re-run the simulation with them (same
+as the seed/years fields above them -- nothing here retroactively changes
+an already-grown tree). "Reset to defaults" clears all overrides. The
+chosen parameters travel with a downloaded history file (they're just
+part of `SimulationHistory.params`), so a saved/shared tree remembers
+what grew it.
 
 ## What the test suite checks
 

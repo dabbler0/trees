@@ -75,6 +75,13 @@ export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
 
 const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
 
+/** Unit vector from the tree toward the sun, given the site's zenith/azimuth. */
+function sunDirection(params: SimulationParams): Vec3 {
+  const sinZ = Math.sin(params.sunZenithAngle);
+  const cosZ = Math.cos(params.sunZenithAngle);
+  return [sinZ * Math.cos(params.sunAzimuth), cosZ, sinZ * Math.sin(params.sunAzimuth)];
+}
+
 /**
  * Phototropic straightening scales with an axis's own persistent
  * hormonal vigor, not with a hardcoded "is this the trunk" check: a
@@ -86,10 +93,38 @@ const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
  * time, an emergent outcome rather than a privileged label -- and nothing
  * stops that axis from wobbling, since it's still just a lerp toward
  * vertical, not a hard override.
+ *
+ * Separately, a *shaded* shoot also bends toward the sun
+ * (heliotropism/phototropism proper) -- more so under a low, oblique sun
+ * where the light gradient across the canopy is pronounced, and not at
+ * all under an overhead sun (sin(0) = 0), where there's no consistent
+ * horizontal direction to bend toward. This is what makes a canopy lean
+ * and thicken toward the light under directional/oblique sun instead of
+ * staying radially symmetric.
  */
-function apexDirection(prevDir: Vec3, hormonalVigor: number, params: SimulationParams): Vec3 {
+function apexDirection(prevDir: Vec3, hormonalVigor: number, exposure: number, sunDir: Vec3, params: SimulationParams): Vec3 {
+  // Heliotropism is a *bias* on top of gravitropism, never a replacement
+  // for it: it shifts the target a shoot straightens toward from
+  // straight up to "mostly up, tilted somewhat toward the sun", capped
+  // well under a full blend. Applying the cap to this fixed target
+  // (rather than to each year's incremental lerp) is what keeps the
+  // long-run direction bounded to a lean regardless of how many years
+  // compound -- lerping toward a moving/uncapped target every year would
+  // otherwise drift arbitrarily far off vertical over a long enough run,
+  // even with a per-year cap on the lerp amount itself.
+  //
+  // Even a fully-sunlit shoot still senses *which side* is brighter
+  // under a directional sun (real phototropism responds to the light
+  // gradient, not just to being in the dark), so the bend never drops
+  // all the way to zero at full exposure -- it's just much stronger for
+  // a shaded shoot seeking light.
+  const shadeFactor = 1 - 0.7 * clamp01(exposure);
+  const heliotropicPull = params.heliotropismStrength * Math.sin(params.sunZenithAngle) * shadeFactor;
+  const bend = Math.min(0.35, heliotropicPull);
+  const target: Vec3 = bend > 0 ? normalize(lerp([0, 1, 0], sunDir, bend)) : [0, 1, 0];
+
   const pull = params.phototropicPull * clamp01(hormonalVigor);
-  return normalize(lerp(prevDir, [0, 1, 0], pull));
+  return normalize(lerp(prevDir, target, pull));
 }
 
 function lateralDirection(parentDir: Vec3, branchingAngle: number, azimuth: number): Vec3 {
@@ -151,6 +186,7 @@ export function stepYear(
   for (const s of prev.segments) segments.set(s.id, { ...s, childIds: [...s.childIds] });
 
   const lightProfile = buildLightProfile(prev.segments, params);
+  const sunDir = sunDirection(params);
   const ageRamp = Math.min(1, year / params.juvenileRampYears);
   const potentialElongation =
     params.baseInternodeLength + (params.maxInternodeLength - params.baseInternodeLength) * ageRamp;
@@ -239,7 +275,7 @@ export function stepYear(
     bud.shadeYears = 0;
     bud.status = 'active';
 
-    const dir = applyDroop(apexDirection(bud.direction, bud.hormonalVigor, params), bud.hormonalVigor, params);
+    const dir = applyDroop(apexDirection(bud.direction, bud.hormonalVigor, exposure, sunDir, params), bud.hormonalVigor, params);
     candidates.push({ bud, demand, dir });
   }
 
