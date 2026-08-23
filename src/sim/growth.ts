@@ -17,9 +17,29 @@ import { placeLeaves } from './leaves';
 import { sunDirection } from './sun';
 
 const MIN_TWIG_RADIUS = 0.0025;
-/** Below this annual elongation (1cm), a bud just waits rather than
- * banking an ever-growing tail of near-zero-length segments. */
-const MIN_GROWTH_LENGTH = 0.01;
+/**
+ * Below this *fraction* of the species' own current-year potential
+ * elongation (`potentialElongation`, itself driven by `maxInternodeLength`),
+ * a bud just waits rather than banking an ever-growing tail of
+ * near-zero-length segments -- see its use site below.
+ *
+ * Scaled to the species' own growth rate rather than a fixed absolute
+ * length (an earlier version used a flat 1cm floor): with an absolute
+ * floor, a slow-growing species (low maxInternodeLength) hits it at a
+ * much higher fraction of its own full vigor -- and so a much lower
+ * height on the shared hydraulic-limitation curve -- than a fast-growing
+ * species does, since the same 1cm bite is a far bigger chunk of a small
+ * annual elongation budget than of a large one. That made the growth-rate
+ * slider a hidden height-ceiling slider too: a slow enough species could
+ * freeze permanently many meters short of what heightVigorHalfHeight
+ * otherwise promises, no matter how long it's given. A fraction of this
+ * year's own potential elongation instead makes the height at which a
+ * leader's growth stalls governed purely by the hydraulic-limitation
+ * curve (the same for every species at a given heightVigorHalfHeight),
+ * not by how fast that species elongates when unconstrained -- a slower
+ * species just takes longer to get there.
+ */
+const MIN_GROWTH_LENGTH_FRACTION = 0.016;
 /** Ground level. A bud whose natural (undrooped-clamp) trajectory would
  * put its new tip below this dies instead of growing into the soil --
  * see the comment at its use site below. */
@@ -307,6 +327,7 @@ export function stepYear(
   const ageRamp = Math.min(1, year / params.juvenileRampYears);
   const potentialElongation =
     params.baseInternodeLength + (params.maxInternodeLength - params.baseInternodeLength) * ageRamp;
+  const minGrowthLength = potentialElongation * MIN_GROWTH_LENGTH_FRACTION;
 
   // --- Whole-tree carbon budget (source: sunlit leaf area; sink: upkeep
   // of standing wood). This is what ultimately caps how much total new
@@ -383,6 +404,28 @@ export function stepYear(
     params.selfThinningMaxFraction *
     Math.max(0, Math.min(1, (capacityFraction - params.selfThinningOnsetFraction) / rampSpan));
   const percentileCutoff = thinFraction > 0 ? exposures[Math.floor(exposures.length * thinFraction)] : -Infinity;
+
+  // A relative (not absolute) "is this currently one of the tree's
+  // dominant axes" signal, used below to exempt the current leader (and
+  // any live co-dominant rivals) from ever dying purely from having
+  // stalled out -- see its use site for why an absolute hormonalVigor
+  // cutoff doesn't work for this. Same style of rank-based criterion as
+  // percentileCutoff above rather than a hardcoded order/threshold check:
+  // whichever handful of buds currently lead the tree in hormonalVigor
+  // are "dominant enough", whatever their raw number happens to have
+  // decayed to.
+  //
+  // A fixed small *count*, not a fraction of the live population: a real
+  // tree only ever has a handful of genuinely competing main axes (the
+  // leader, plus maybe one or two co-dominant rivals) no matter how many
+  // thousands of twigs and spurs it's carrying -- a percentage-of-
+  // population exemption scales with tree size and starts covering
+  // hundreds of ordinary subordinate branches once the crown is mature,
+  // which is indistinguishable from turning off subordinate-branch
+  // senescence altogether.
+  const DOMINANT_VIGOR_COUNT = 3;
+  const hormonalVigors = nonDeadBuds.map((b) => b.hormonalVigor).sort((a, b) => a - b);
+  const dominantVigorCutoff = hormonalVigors[Math.max(0, hormonalVigors.length - DOMINANT_VIGOR_COUNT)];
 
   for (const bud of buds) {
     if (bud.status === 'dead') continue;
@@ -491,7 +534,7 @@ export function stepYear(
     bud.vigor = vigor;
 
     const length = potentialElongation * vigor;
-    if (length < MIN_GROWTH_LENGTH) {
+    if (length < minGrowthLength) {
       // Too little carbon/hydraulic headroom to add a whole new growth
       // unit this year -- the bud simply waits at its current tip rather
       // than adding an ever-growing tail of near-zero-length segments.
@@ -501,31 +544,49 @@ export function stepYear(
       // annual height increment shrinks toward (but need not reach)
       // zero.
       bud.stalledYears += 1;
-      // Gated by hormonalVigor, not applied uniformly to every stalled
-      // bud: a hydraulically-plateaued but still-dominant leader (high
-      // hormonalVigor) is *supposed* to coast at a near-zero annual
-      // increment forever -- that's the whole hydraulic-limitation
-      // height-plateau mechanism, and it must never trip this. A
-      // genuinely subordinate bud (low hormonalVigor) gets a much
-      // shorter tolerance: real spur shoots have a finite productive
-      // lifespan even in good light (temperate fruit-tree physiology
-      // puts it at roughly 5-15 years), and without this a stalled,
-      // clearly-subordinate bud that happens to sit somewhere the
-      // shadow-casting light model never finds anything genuinely
+      // Exempted entirely if this bud is currently one of the tree's
+      // dominant axes (see dominantVigorCutoff above): a hydraulically-
+      // plateaued but still-dominant leader is *supposed* to coast at a
+      // near-zero annual increment forever -- that's the whole
+      // hydraulic-limitation height-plateau mechanism -- and this must
+      // never trip for it. An earlier version gated this on an absolute
+      // hormonalVigor threshold instead of a relative rank, which sounds
+      // equivalent but isn't: hormonalVigor keeps decaying a little every
+      // year a bud actually elongates (apicalVigorRetention < 1), so by
+      // the time a long-lived species' leader finally reaches its true
+      // height ceiling, *its own* hormonalVigor has typically drifted
+      // well below whatever fixed cutoff looked reasonable early in a
+      // run -- meaning the exemption quietly stopped covering the one
+      // bud it exists for, and the leader eventually senesced anyway,
+      // taking the rest of the tree down with it once nothing was left
+      // to replenish the bud population. Ranking against whatever's
+      // currently alive doesn't have that problem: whichever axis (or
+      // axes, under co-dominance) currently leads the tree is always
+      // "dominant enough", whatever its raw number has decayed to.
+      //
+      // A genuinely subordinate bud (not in that top slice) gets a much
+      // shorter tolerance instead: real spur shoots have a finite
+      // productive lifespan even in good light (temperate fruit-tree
+      // physiology puts it at roughly 5-15 years), and without this a
+      // stalled, clearly-subordinate bud that happens to sit somewhere
+      // the shadow-casting light model never finds anything genuinely
       // overhead (a low, off-center twig under a still-sparse young
       // canopy, say) could otherwise coast at "barely alive, adding
       // nothing" indefinitely.
-      // Ramped rather than a hard "stalledYears >= tolerated" cutoff, for
-      // the same reason as trunk occlusion and light senescence above:
-      // hormonalVigor (and so toleratedStallYears) is a near-deterministic
-      // function of a bud's order/position in the branching hierarchy, so
-      // a whole same-order cohort of subordinate buds reliably stalls out
-      // in the same year and would otherwise all hit the exact same
-      // tolerated-years cutoff together, dying in lockstep.
-      const toleratedStallYears = params.spurSenescenceYears / Math.max(0.02, 1 - bud.hormonalVigor);
-      const yearsPastTolerance = bud.stalledYears - toleratedStallYears;
-      if (rng() < rampedDeathProbability(yearsPastTolerance, 1, 0.4)) {
-        bud.status = 'dead';
+      if (bud.hormonalVigor < dominantVigorCutoff) {
+        // Ramped rather than a hard "stalledYears >= tolerated" cutoff,
+        // for the same reason as trunk occlusion and light senescence
+        // above: hormonalVigor (and so toleratedStallYears) is a
+        // near-deterministic function of a bud's order/position in the
+        // branching hierarchy, so a whole same-order cohort of
+        // subordinate buds reliably stalls out in the same year and
+        // would otherwise all hit the exact same tolerated-years cutoff
+        // together, dying in lockstep.
+        const toleratedStallYears = params.spurSenescenceYears / Math.max(0.02, 1 - bud.hormonalVigor);
+        const yearsPastTolerance = bud.stalledYears - toleratedStallYears;
+        if (rng() < rampedDeathProbability(yearsPastTolerance, 1, 0.4)) {
+          bud.status = 'dead';
+        }
       }
       continue;
     }
@@ -660,7 +721,7 @@ export function stepYear(
   // still pushes out a modest tuft of leaves every season on its
   // existing tip, same as a real spur shoot -- foliage production isn't
   // strictly coupled to stem elongation. Without this, a tree that ever
-  // dips below MIN_GROWTH_LENGTH loses all foliage within
+  // dips below the growth-stall floor loses all foliage within
   // leafLifespanYears, which zeroes its carbon income forever and it can
   // never recover: an unrealistic, self-inflicted death spiral.
   const liveBudSegmentIds = new Set(allBuds.filter((b) => b.status !== 'dead').map((b) => b.segmentId));
@@ -684,7 +745,7 @@ export function stepYear(
   // that could be abscised this year has already been resolved, and its
   // removal has already updated the parent's childIds.
   // A segment still hosting a non-dead bud (e.g. one that's carbon/
-  // hydraulically stalled below MIN_GROWTH_LENGTH but could resume) must
+  // hydraulically stalled below the growth-stall floor but could resume) must
   // never be abscised out from under it.
   const segmentsWithLiveBuds = new Set(allBuds.filter((b) => b.status !== 'dead').map((b) => b.segmentId));
   const deadLongEnough = (s: BranchSegment) =>

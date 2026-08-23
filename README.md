@@ -140,6 +140,26 @@ Each simulated year:
    tracked per segment (see "Secondary growth" below) for the pipe model
    and the "Hydraulic resistance" debug color mode -- it's a real,
    physically meaningful quantity -- it just isn't what throttles vigor.
+   As height climbs toward `heightVigorHalfHeight`, a bud's annual
+   elongation (its share of `maxInternodeLength`, scaled by this factor)
+   eventually drops below a threshold (`MIN_GROWTH_LENGTH_FRACTION`) and
+   the bud just waits rather than adding an ever-growing tail of
+   near-zero-length segments -- this is what actually produces the height
+   *plateau*. That threshold is a *fraction* of the species' own current
+   annual elongation, not a fixed absolute length: an earlier version
+   used a flat 1cm floor, which made a slow-growing species (low
+   `maxInternodeLength`) hit it at a much higher fraction of its own full
+   vigor -- and so a much *lower* height on this same curve -- than a
+   fast-growing species with the identical `heightVigorHalfHeight`,
+   since a fixed 1cm bite is a far bigger fraction of a small annual
+   elongation budget than of a large one. That silently made the
+   growth-rate slider a second, hidden height-ceiling control: a slow
+   enough species could freeze permanently many meters short of what
+   `heightVigorHalfHeight` otherwise promises, no matter how long it was
+   given. A fraction of the species' own potential elongation instead
+   makes the stall height purely a function of the shared
+   hydraulic-limitation curve -- a slower species just takes longer to
+   reach the same ceiling, rather than reaching a different, lower one.
 5. **Self-pruning / senescence** -- a bud whose *local* light exposure
    stays below threshold for several years (or ranks in the shadiest
    ~10% once the crown is near carrying capacity -- a Reineke
@@ -148,11 +168,29 @@ Each simulated year:
    Two more senescence rules apply independent of light: a bud that's
    gone many consecutive years without managing a whole new growth
    increment (a stalled, non-elongating "spur") eventually senesces
-   regardless of how well-lit it currently is -- gated by hormonal vigor,
-   so a hydraulically-plateaued but still-dominant leader that's
-   *supposed* to coast at a near-zero annual increment forever (the
-   height-plateau mechanism above) never trips it, while a genuinely
-   subordinate bud does after a shorter tolerance, matching how real spur
+   regardless of how well-lit it currently is -- except for whichever
+   handful of buds (a fixed small count, not a fraction of the live
+   population -- a real tree only ever has a few genuinely competing main
+   axes no matter how many thousands of twigs it carries) currently rank
+   highest in hormonal vigor, exempted entirely: a hydraulically-
+   plateaued but still-dominant leader is *supposed* to coast at a
+   near-zero annual increment forever (the height-plateau mechanism
+   above), and this must never kill it. The exemption is rank-based
+   (relative to whatever's currently alive) rather than an absolute
+   hormonal-vigor cutoff, because hormonal vigor keeps decaying a little
+   every year a bud actually elongates -- so by the time a long-lived
+   species' leader finally reaches its true height ceiling, its own
+   value has typically drifted well below any fixed number that looked
+   like "the dominant one" early in a run. Without this fix, the model
+   had no genuine long-term equilibrium at all: the leader's own
+   apparent dominance eventually decayed enough to lose its exemption,
+   it senesced on the same finite clock as everything else, and -- since
+   new buds are only ever created as a side effect of a segment actually
+   elongating -- nothing ever replenished the population once growth
+   broadly stalled, so *any* parameter set eventually went fully extinct
+   given a long enough run, just sooner for a species that reached its
+   ceiling sooner. A genuinely subordinate bud (outside that top handful)
+   still senesces after a shorter tolerance, matching how real spur
    shoots have a finite productive lifespan even in good light. And a
    bud that stays down in the low zone near the trunk's base for too long
    dies as the thickening trunk progressively occludes it (bark
