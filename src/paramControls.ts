@@ -219,14 +219,14 @@ export const PARAM_CONTROLS: ParamControlDef[] = [
     0.01,
     (v) => v.toFixed(2)
   ),
-  logScale(
+  linear(
     'mechanicalThickeningFactor',
     'Trunk taper / wind-firmness',
-    'Extra trunk thickening purely for mechanical self-support. Higher gives a stouter, more tapered trunk (open-grown/wind-exposed form); lower gives a slenderer one (forest-grown).',
+    'Multiplier on the real-wood-physics mechanical-support floor (Greenhill buckling for the trunk, cantilever bending for lateral branches -- see pipeModel.ts): 1.0 is a real green-hardwood safety margin. Higher gives a stouter, more over-built trunk (open-grown/wind-exposed form); lower gives a slenderer, more marginally-built one (sheltered forest-grown, living closer to the structural edge).',
     'species',
-    0.0004,
-    0.005,
-    0.02,
-    (v) => v.toFixed(4)
+    0.3,
+    3,
+    0.1,
+    (v) => v.toFixed(1)
   ),
 ];

@@ -45,7 +45,7 @@ export const defaultParams: SimulationParams = {
   trunkWaviness: (5 * Math.PI) / 180,
 
   pipeModelRatio: 0.00032,
-  mechanicalThickeningFactor: 0.002,
+  mechanicalThickeningFactor: 1,
 
   leafAreaPerShootLength: 0.18,
   leafLifespanYears: 2,
@@ -60,7 +60,7 @@ export const defaultParams: SimulationParams = {
   lowBranchOcclusionAge: 15,
   lowBranchOcclusionHeight: 1.4,
 
-  respirationPerWoodyVolume: 70,
+  respirationPerWoodyVolume: 25,
   carbonCostPerMeterGrowth: 0.04,
 };
 

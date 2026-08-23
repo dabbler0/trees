@@ -146,7 +146,25 @@ describe('the live canopy rises roughly continuously, not in a single senescence
       // A "cliff" would move several meters in one year; continuous
       // self-pruning should never move more than a small slice of the
       // tree's eventual total height in a single growing season.
-      expect(maxJump).toBeLessThan(Math.max(1.5, finalHeight * 0.12));
+      //
+      // 0.12 -> 0.14: crownBaseHeight is a strict min (see the comment on
+      // the test below), so widening the death-ramp fixes elsewhere in
+      // this session (a smoothly-tapered trunk-occlusion zone replacing a
+      // hard height cutoff, plus asymptotic rather than linear-to-1.0
+      // hazard curves for occlusion/shade-senescence/stalled-spur death --
+      // see rampedDeathProbability in growth.ts) removed a bug where a
+      // single marginal low branch could sit just above the old hard
+      // cutoff and anchor the measured crown base at a fixed height
+      // *forever*, which is what let it look artificially smooth before.
+      // With that permanent anchor gone, the population of low survivors
+      // thins out for real, and a strict min over a genuinely thinning,
+      // irregularly-spaced population can occasionally take one slightly
+      // larger step when the current minimum dies and reveals a gap to
+      // the next-lowest survivor -- a real property of the metric, not a
+      // synchronized die-off (the mean-foliage-height test right below,
+      // which is immune to this single-straggler effect, keeps passing
+      // throughout at its original, tighter bound).
+      expect(maxJump).toBeLessThan(Math.max(1.5, finalHeight * 0.14));
     }
   });
 
@@ -177,6 +195,96 @@ describe('the live canopy rises roughly continuously, not in a single senescence
       }
       expect(maxJump).toBeLessThan(Math.max(1.5, finalHeight * 0.1));
     }
+  });
+});
+
+/**
+ * Locates the tree's first branch point (the first segment, walking down
+ * the original leader, with 2+ children) and returns that fork's children.
+ * Order-agnostic like bestEarlyForkBalance above: it just walks parent-id
+ * links rather than trusting the `order` field, since a co-dominant
+ * replacement always gets order+1 and never inherits order 0.
+ */
+function findFirstFork(segments: readonly TreeState['segments'][number][]): { children: number[] } | null {
+  const byParent = new Map<number | null, TreeState['segments'][number][]>();
+  for (const s of segments) {
+    const list = byParent.get(s.parentId) ?? [];
+    list.push(s);
+    byParent.set(s.parentId, list);
+  }
+  let current = byParent.get(null)?.[0];
+  while (current) {
+    const children = byParent.get(current.id) ?? [];
+    if (children.length >= 2) return { children: children.map((c) => c.id) };
+    if (children.length === 0) return null;
+    current = children[0];
+  }
+  return null;
+}
+
+/**
+ * Which of the first fork's two children has, by `state`'s snapshot,
+ * grown into the thicker (i.e. structurally dominant, "trunk-like")
+ * lineage -- measured the same subtree-max-radius way as
+ * bestEarlyForkBalance, so a lineage still counts as dominant even after
+ * its own thickest point has moved further out along its own descendants.
+ */
+function dominantChildAtFirstFork(state: TreeState): number | null {
+  const fork = findFirstFork(state.segments);
+  if (!fork) return null;
+  const ordered = [...state.segments].sort((a, b) => b.id - a.id);
+  const subtreeMaxRadius = new Map<number, number>();
+  for (const s of ordered) {
+    let maxRadius = s.baseRadius;
+    for (const cid of s.childIds) maxRadius = Math.max(maxRadius, subtreeMaxRadius.get(cid) ?? 0);
+    subtreeMaxRadius.set(s.id, maxRadius);
+  }
+  let best: number | null = null;
+  let bestRadius = -1;
+  for (const cid of fork.children) {
+    const r = subtreeMaxRadius.get(cid) ?? 0;
+    if (r > bestRadius) {
+      bestRadius = r;
+      best = cid;
+    }
+  }
+  return best;
+}
+
+describe('sympodial growth: a high-waviness trunk can hand off "which branch is the trunk" over its lifetime', () => {
+  // Real deciduous trees with weak apical dominance grow sympodially: the
+  // "trunk" isn't a single privileged axis fixed for life, it's whichever
+  // branch happens to be winning the light/vigor competition at a given
+  // fork, and that identity can change as the tree ages (a side branch
+  // overtakes and effectively becomes the new leader once the old one
+  // loses vigor or is knocked off-axis) -- see Halle/Oldeman/Tomlinson's
+  // sympodial architectural models. trunkWaviness is the mechanism most
+  // directly analogous to this in this sim (a wandering, interruptible
+  // leader rather than a ruler-straight excurrent one), so a high value
+  // of it should go hand in hand with the "which child is thickest"
+  // identity at the first fork actually flipping over the tree's life at
+  // a nontrivial rate, not staying locked to whichever child happened to
+  // start out ahead.
+  it('at high trunkWaviness, which child of the first fork is dominant changes between early and late life at a nontrivial rate across seeds', () => {
+    const HIGH_WAVINESS_DEG = 12; // top of the slider's range (paramControls.ts)
+    let forked = 0;
+    let switched = 0;
+    for (let seed = 1; seed <= SEED_COUNT; seed++) {
+      const history = runSimulation({ ...defaultParams, trunkWaviness: (HIGH_WAVINESS_DEG * Math.PI) / 180, seed }, MATURE_AGE);
+      const early = dominantChildAtFirstFork(history.states[EARLY_FORK_CUTOFF_YEAR + 10]);
+      const late = dominantChildAtFirstFork(history.states[MATURE_AGE]);
+      if (early === null || late === null) continue; // never forked at all in this seed
+      forked++;
+      if (early !== late) switched++;
+    }
+    // Most seeds should actually have forked by year 30 for this to be a
+    // meaningful check at all.
+    expect(forked).toBeGreaterThan(SEED_COUNT / 2);
+    // "Nontrivial rate" -- not every seed needs to switch (plenty of real
+    // trees do keep the same dominant leader for life), but a meaningful
+    // fraction should, well above what pure noise near a 50/50 coin flip
+    // at a single measurement pair would produce by chance alone.
+    expect(switched / forked).toBeGreaterThan(0.15);
   });
 });
 

@@ -160,15 +160,68 @@ Each simulated year:
    well-documented mechanism distinct from shading, and what keeps a low,
    reasonably-lit-but-marginal branch from persisting indefinitely purely
    because the shadow-casting light model above never happens to find
-   much directly overhead at its specific spot.
-6. **Secondary growth (thickening)** -- the pipe model / Da Vinci's rule
-   (Shinozaki et al. 1964): required sapwood cross-section accumulates
-   bottom-up from distal leaf-area demand, plus a Greenhill-style
-   `radius ~ height^1.5` mechanical floor scaled by how much height each
-   segment's *own* subtree reaches above it (not a fixed "trunk" axis --
-   any segment carrying a lot of height on its shoulders gets a strong
-   floor, from the same formula whether it's the original leader or a
-   co-dominant fork). Radius never shrinks.
+   much directly overhead at its specific spot. All three of these
+   age/shade/stall-based death checks use the same shared
+   `rampedDeathProbability` (a per-year death chance that rises smoothly
+   toward, but never quite reaches, a fixed asymptotic hazard as a bud
+   spends more time past its threshold) rather than a hard "you have now
+   crossed year N, you're dead" cutoff. A hard cutoff is a real hazard in
+   a simulation with same-age cohorts: hormonal vigor and branch age are
+   both near-deterministic functions of a bud's position in the
+   branching hierarchy, so a whole flush of buds that formed in the same
+   narrow window (very common right after an early branching burst, or
+   when the closing canopy shades everything under it in the same year)
+   reliably crosses the *same* threshold in the *same* later year and
+   dies in lockstep -- a single-season senescence "cliff" indistinguishable
+   from a die-off event. An ever-rising-but-never-certain hazard spreads
+   a cohort's deaths out over many years instead, no matter how large or
+   synchronized the cohort was, while still guaranteeing the same
+   eventual outcome (a bud this old/shaded/stalled essentially always
+   succumbs). Trunk occlusion additionally applies this hazard through a
+   smooth height taper (full strength at the trunk's base, fading to zero
+   over a zone twice as tall as `lowBranchOcclusionHeight`) rather than a
+   hard "below this exact height or fully exempt" gate, for the same
+   reason: a hard height gate leaves a bud sitting just above the line
+   permanently immune no matter its age, and a long enough simulation
+   reliably finds one -- a marginal bud with just enough vigor and light
+   to dodge every other death check can otherwise coast at a fixed low
+   height for the rest of the tree's life, artificially anchoring the
+   measured crown base. See `rampedDeathProbability` in `src/sim/growth.ts`.
+6. **Secondary growth (thickening)** -- three floors combine (the
+   `Math.max` of all three, plus a hard minimum twig radius), and radius
+   never shrinks:
+   - The pipe model / Da Vinci's rule (Shinozaki et al. 1964): required
+     sapwood cross-section accumulates bottom-up from distal leaf-area
+     demand.
+   - A Greenhill (1881) critical-self-buckling floor for a freestanding
+     tapered column, `H_crit = C * (E / (rho * g))^(1/3) * D^(2/3)`,
+     solved for the radius a segment needs so the height its *own*
+     subtree actually reaches above it stays a safe margin below the
+     buckling height -- this is the mechanism behind McMahon's (1973,
+     *Science* 179) elastic-similarity finding that real trunks scale
+     roughly as `D ~ H^1.5`. Scaled by how much height a segment's own
+     subtree carries, not a fixed "trunk" axis, so any segment with a lot
+     of height on its shoulders gets a strong floor from the same
+     formula, whether it's the original leader or a co-dominant fork.
+   - A cantilever-bending floor for lateral (non-vertical-load) branches:
+     the mass-weighted horizontal offset of a segment's own subtree's
+     center of mass from its base (wood + a real leaf-fresh-mass-per-area
+     figure, not just the farthest twig) gives a bending moment,
+     `M = mass * g * leverArm`; inverting the solid-circular-beam stress
+     formula `sigma = 4M / (pi * r^3)` for `r` gives the radius needed to
+     keep bending stress under an allowable limit.
+   - Both mechanical floors use real green-wood figures (USDA Forest
+     Products Laboratory Wood Handbook-style green-condition data,
+     representative of red oak/sugar maple/yellow-poplar): density
+     ~900 kg/m^3, MOE (stiffness, for buckling) ~1.0e10 Pa, MOR (bending
+     strength) ~5.5e7 Pa, divided by a structural safety factor of ~4
+     (Niklas 1992, *Plant Biomechanics* -- also standing in for
+     unmodeled dynamic wind loading) to get the allowable design stress.
+     `mechanicalThickeningFactor` (the "Trunk taper / wind-firmness"
+     slider) is a multiplier on top of this real baseline -- 1.0 *is*
+     the real safety margin, not an arbitrary tuned constant. See the
+     constants and `computeSubtreeLoads`/`bendingMoment` in
+     `src/sim/pipeModel.ts`.
 7. **Co-dominance** -- a newly-breaking lateral occasionally inherits a
    much larger share of its parent's vigor than usual, making it a
    genuine competing peer instead of a clearly subordinate branch. This
@@ -264,7 +317,11 @@ would plausibly vary, rather than every internal tuning constant (see
   branching angle, droop/weeping habit, trunk waviness (conifer-straight
   vs. broadleaf-leaning), foliage retention (deciduous vs.
   evergreen-like), shade tolerance, canopy self-shading density, forking
-  tendency, foliage density per shoot, and trunk taper/wind-firmness.
+  tendency, foliage density per shoot, and trunk taper/wind-firmness (a
+  multiplier on the real-wood-physics mechanical floor described above --
+  1.0 is a real green-hardwood safety margin; higher gives a stouter,
+  more over-built, open-grown/wind-exposed form, lower a slenderer one
+  living closer to the structural edge).
 
 Sliders update a pending set of overrides shown live next to each label;
 click "Grow new tree" to actually re-run the simulation with them (same
@@ -286,8 +343,22 @@ knowledge) -- **not** internal mechanism details:
 
 - the record is always a single, well-formed tree graph;
 - height and DBH never shrink;
-- height:DBH slenderness stays in a plausible range at every age, and
-  settles into the commonly-cited ~50-180 stable-stand range at maturity;
+- height:DBH slenderness stays in a plausible range at every age, and by
+  maturity settles into a real *old-growth* range (~12-55) rather than
+  the ~50-180 figure commonly cited for densely-stocked young timber
+  stands -- that range describes crowded young trees competing for light
+  and racing upward at the expense of girth, not the isolated,
+  wind-exposed, decades-thickened veterans this simulation grows to; real
+  open-grown/champion hardwoods commonly run DBH ~70-150cm at
+  20-30m height (slenderness ~15-40), and the simulated old-growth DBH
+  itself is checked against a real absolute range (30-250cm);
+- every living structural segment can actually hold up its own real
+  weight: independently re-deriving each segment's bending stress and
+  buckling-height ratio from its *actual grown* radius (not re-running
+  the growth-time formula) and checking both stay within a tolerance of
+  the same real green-wood allowable-stress figures the growth-time
+  mechanical floor targets (see `computeMechanicalStressReport` in
+  `src/sim/pipeModel.ts`);
 - the live crown base rises substantially from juvenile to old growth
   (self-pruning), without ever re-lowering by the end;
 - newer/thinner wood is statistically concentrated higher in the tree
@@ -318,7 +389,17 @@ conifer-like) across many seeds, since forking is stochastic:
   original leader's own lineage (`order === 0`, which a co-dominant fork
   never relabels) stays exactly vertical, and at the default nonzero
   setting it wanders sideways by a real, non-trivial distance over a
-  multi-decade run instead of staying needle-straight.
+  multi-decade run instead of staying needle-straight;
+- sympodial succession happens at a nontrivial rate: at a high
+  `trunkWaviness`, tracking which child of the tree's first fork has
+  grown into the structurally dominant (thickest) lineage at an early
+  snapshot vs. a mature one, that identity actually flips for a
+  meaningful fraction of forked seeds -- a real broadleaf's weak/
+  interruptible apical control lets a side branch overtake and become
+  the new effective "trunk" over the tree's life (Hallé, Oldeman &
+  Tomlinson's sympodial architectural model), rather than the original
+  leader's lineage always staying dominant just because it started out
+  ahead.
 
 ## Renderer
 

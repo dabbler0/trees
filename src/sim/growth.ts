@@ -28,6 +28,28 @@ const GROUND_HEIGHT = 0.02;
  * in the browser or in a long-running test; real self-shading should keep
  * well under this. */
 const MAX_SEGMENTS = 120_000;
+/**
+ * Per-year death probability for a bud that is `yearsPast` years beyond a
+ * senescence/occlusion age-or-shade threshold, used by both the trunk
+ * occlusion and light-senescence death checks below.
+ *
+ * This asymptotically approaches (but, critically, never reaches)
+ * `maxHazard` as yearsPast grows, rather than linearly ramping from 0 to a
+ * hard 1.0 over a fixed number of years. A linear-to-1.0 ramp still hides
+ * a cliff: whichever single year the ramp completes at, every bud that
+ * happens to have survived the probabilistic rolls up to that point (and
+ * with a large same-age cohort -- e.g. a whole flush of laterals that
+ * crossed into shade the same year the canopy closed over them -- there
+ * are always some survivors) dies together in that one year, for certain.
+ * A constant asymptotic hazard has no such cutoff year: survivors keep
+ * thinning out at the same steady per-year rate forever, so a cohort's
+ * deaths spread smoothly across many years no matter how large the
+ * cohort or how synchronized its members' threshold-crossing was.
+ */
+function rampedDeathProbability(yearsPast: number, tauYears: number, maxHazard: number): number {
+  if (yearsPast <= 0) return 0;
+  return maxHazard * (1 - Math.exp(-yearsPast / tauYears));
+}
 
 export interface GrowthContext {
   nextSegmentId: number;
@@ -381,10 +403,43 @@ export function stepYear(
     // reasonably-lit-but-marginal branch near the base from persisting
     // indefinitely purely because the shadow-casting light model never
     // happens to find much directly overhead at its specific spot.
-    if (bud.position[1] < params.lowBranchOcclusionHeight && bud.ageYears > params.lowBranchOcclusionAge) {
-      bud.status = 'dead';
-      bud.vigor = 0;
-      continue;
+    //
+    // Ramped rather than a hard age cutoff: a whole cohort of buds that
+    // happened to form in the same narrow window (common right after a
+    // burst of early lateral branching) would otherwise all cross the
+    // exact same age threshold in the exact same year, dying in lockstep
+    // -- precisely the single-year senescence "cliff" this codebase
+    // otherwise goes out of its way to avoid (see selfThinningOnsetFraction
+    // /selfThinningMaxFraction). rampedDeathProbability's asymptotic hazard
+    // (see its own comment) keeps the same eventual outcome (a low branch
+    // this old essentially always succumbs, eventually) without a
+    // synchronized-cohort spike at any particular year.
+    //
+    // The height gate is itself a smooth taper rather than a hard "below
+    // lowBranchOcclusionHeight or fully exempt" cutoff, for a related
+    // reason: a hard cutoff leaves a bud that happens to sit just above
+    // it permanently immune to occlusion no matter its age, and a
+    // long-lived tree reliably finds one -- a marginal, barely-elongating
+    // bud with enough hormonalVigor to dodge the carbon-starvation stall
+    // check and just enough light, some years, to dodge shade senescence
+    // too, can coast for the tree's entire remaining lifespan sitting a
+    // few centimeters above the line. Since it never dies and its own
+    // position barely moves, it permanently pins the whole tree's
+    // measured crown base at that one height, which is exactly backwards
+    // (real old-growth crowns clear the trunk far higher, and by a
+    // *growing* margin, the older the tree gets). Tapering occlusion
+    // pressure smoothly to zero over a zone twice as tall as the nominal
+    // height removes that permanent escape hatch: nothing sits at a fixed
+    // height forever with full, permanent immunity.
+    const OCCLUSION_HEIGHT_TAPER = 2;
+    const occlusionHeightFactor = clamp01(1 - bud.position[1] / (params.lowBranchOcclusionHeight * OCCLUSION_HEIGHT_TAPER));
+    if (occlusionHeightFactor > 0) {
+      const yearsPastThreshold = bud.ageYears - params.lowBranchOcclusionAge;
+      if (rng() < occlusionHeightFactor * rampedDeathProbability(yearsPastThreshold, 1.2, 0.2)) {
+        bud.status = 'dead';
+        bud.vigor = 0;
+        continue;
+      }
     }
 
     // Senescence (self-pruning) is a *local* carbon-balance phenomenon: a
@@ -397,7 +452,22 @@ export function stepYear(
     // height *plateau* instead of a hard cutoff.
     if (exposure < params.senescenceLightThreshold || exposure <= percentileCutoff) {
       bud.shadeYears += 1;
-      bud.status = bud.shadeYears >= params.senescenceYearsTolerance ? 'dead' : 'dormant';
+      // Ramped rather than a hard "shadeYears >= tolerance" cutoff, for
+      // the same reason as trunk occlusion above: a whole cohort of buds
+      // that happened to drop into shade in the same year (very common --
+      // the crown closing overhead is itself a single-year event that
+      // affects everything under it at once) would otherwise all bank
+      // shadeYears in lockstep and then all hit the exact same threshold
+      // in the exact same later year, dying together in one synchronized
+      // spike -- precisely the senescence "cliff" this codebase otherwise
+      // goes out of its way to avoid. rampedDeathProbability's asymptotic
+      // hazard keeps the same eventual outcome (a bud this chronically
+      // shaded essentially always succumbs, eventually) without every
+      // member of a same-age-of-shading cohort falling on the same day,
+      // no matter how large that cohort is.
+      const yearsPastTolerance = bud.shadeYears - params.senescenceYearsTolerance;
+      const dies = rng() < rampedDeathProbability(yearsPastTolerance, 1.2, 0.2);
+      bud.status = dies ? 'dead' : 'dormant';
       bud.vigor = 0;
       continue;
     }
@@ -445,8 +515,16 @@ export function stepYear(
       // overhead (a low, off-center twig under a still-sparse young
       // canopy, say) could otherwise coast at "barely alive, adding
       // nothing" indefinitely.
+      // Ramped rather than a hard "stalledYears >= tolerated" cutoff, for
+      // the same reason as trunk occlusion and light senescence above:
+      // hormonalVigor (and so toleratedStallYears) is a near-deterministic
+      // function of a bud's order/position in the branching hierarchy, so
+      // a whole same-order cohort of subordinate buds reliably stalls out
+      // in the same year and would otherwise all hit the exact same
+      // tolerated-years cutoff together, dying in lockstep.
       const toleratedStallYears = params.spurSenescenceYears / Math.max(0.02, 1 - bud.hormonalVigor);
-      if (bud.stalledYears >= toleratedStallYears) {
+      const yearsPastTolerance = bud.stalledYears - toleratedStallYears;
+      if (rng() < rampedDeathProbability(yearsPastTolerance, 1, 0.4)) {
         bud.status = 'dead';
       }
       continue;

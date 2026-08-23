@@ -28,6 +28,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { defaultParams } from '../src/sim/params';
 import { runSimulation } from '../src/sim/simulate';
+import { computeMechanicalStressReport, MECHANICAL_CONSTANTS } from '../src/sim/pipeModel';
 import type { SimulationHistory, TreeState } from '../src/model/types';
 import { assertIsValidTree, mean, pearsonCorrelation, segmentMeanRadius, segmentMidHeight } from './testUtils';
 
@@ -76,11 +77,66 @@ describe('trunk thickness stays in a biologically plausible range for its size a
     expect(slenderness).toBeGreaterThan(3);
   });
 
-  it('settles into the commonly-cited stable-stand range (~50-180) by maturity', () => {
+  it('settles into a real old-growth-stout range by maturity, not a dense-young-stand one', () => {
+    // The ~50-180 "slenderness coefficient" figure widely cited in
+    // forestry (see the file-level comment above) describes densely
+    // stocked, competition-grown timber stands -- it is *not* what an
+    // old, comparatively open-grown tree actually looks like. Real
+    // veteran/old-growth broadleaf trees are dramatically stouter:
+    // widely-documented examples (state/national champion-tree registers,
+    // old-growth-forest surveys) put large, ~100-200-year-old open-grown
+    // oaks/maples at roughly 70-150cm DBH and 20-30m height -- a
+    // slenderness coefficient of roughly 15-40, well below the
+    // young-stand range. A real old tree spends a long life adding girth
+    // with comparatively little further height gain, so its DBH grows
+    // disproportionately relative to a young, still-racing-upward stand
+    // tree.
     const m = at(OLD_GROWTH_AGE).metrics;
     const slenderness = m.height / m.dbh;
-    expect(slenderness).toBeLessThan(180);
-    expect(slenderness).toBeGreaterThan(50);
+    expect(slenderness).toBeLessThan(55);
+    expect(slenderness).toBeGreaterThan(12);
+  });
+
+  it('old-growth DBH itself falls in a realistic real-world range for its height', () => {
+    // Cross-check the ratio above against absolute numbers: a real
+    // ~100-year-old open-grown temperate broadleaf reaching this
+    // simulated tree's height commonly has a trunk somewhere in the
+    // few-tens-of-cm range, not a sapling-thin pole -- but also not a
+    // multi-meter giant-sequoia-scale trunk, which this species/age
+    // combination has no business producing.
+    const m = at(OLD_GROWTH_AGE).metrics;
+    const dbhCm = m.dbh * 100;
+    expect(dbhCm).toBeGreaterThan(30);
+    expect(dbhCm).toBeLessThan(250);
+  });
+
+  it("every living structural segment can actually hold up its own real weight (real green-wood bending/buckling physics)", () => {
+    // Re-derives actual bending stress and buckling margin from each
+    // segment's *finished* radius and real subtree mass/geometry (see
+    // computeMechanicalStressReport) and checks it against real green-wood
+    // strength (USDA Forest Products Laboratory Wood Handbook-range
+    // figures -- see pipeModel.ts) rather than just re-running the same
+    // growth-time formula: pipe-model demand, an ancestor's own floor, or
+    // the coarse per-year growth/taper approximations could each still
+    // leave some corner of the tree under- or (more often) comfortably
+    // over-built, and this checks the *outcome*, not the formula.
+    for (const year of [40, 70, 90, OLD_GROWTH_AGE]) {
+      const state = at(year);
+      const structural = state.segments.filter((s) => s.alive);
+      if (structural.length === 0) continue;
+      const report = computeMechanicalStressReport(structural);
+      // Generous tolerance beyond the design safety margin already baked
+      // into ALLOWABLE_BENDING_STRESS (itself green MOR / a ~4x safety
+      // factor): this should only ever fire on a *gross* under-build, not
+      // nibble at the exact margin the growth-time formula targets.
+      const stressTolerance = 2;
+      const bucklingTolerance = 1.5;
+      for (const s of structural) {
+        const { bendingStressPa, bucklingHeightRatio } = report.get(s.id)!;
+        expect(bendingStressPa).toBeLessThan(MECHANICAL_CONSTANTS.ALLOWABLE_BENDING_STRESS * stressTolerance);
+        expect(bucklingHeightRatio).toBeLessThan(bucklingTolerance);
+      }
+    }
   });
 
   it('DBH growth roughly tracks age (no sudden unphysical jumps)', () => {
