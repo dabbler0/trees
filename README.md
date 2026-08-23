@@ -98,8 +98,22 @@ Each simulated year:
    self-support. Radius never shrinks.
 7. **Phyllotaxis / branching geometry** -- lateral buds are placed along
    each new internode at a golden-angle (137.5°) spiral with a
-   configurable branching angle, plus gravitropic droop and phototropic
-   straightening.
+   configurable branching angle, plus gravitropic droop. Only the true
+   leader straightens strongly toward vertical each year (phototropism);
+   a lateral keeps most of its own outward angle as it keeps extending,
+   which is what actually spreads a canopy out sideways into a rounded
+   silhouette instead of a narrow, conifer-like column.
+8. **Co-dominant trunk forking** -- a lateral breaking off the *current*
+   trunk axis, while the tree is still young, occasionally (not
+   guaranteed) becomes a second or third genuinely co-dominant trunk
+   instead of a subordinate branch, exactly how many broadleaf saplings
+   naturally fork low down; a conifer's single permanent leader never
+   does this.
+9. **Waning apical control** -- unlike an excurrent conifer, a broadleaf
+   ("decurrent") leader's hormonal dominance erodes gradually with age
+   (`trunkAgingPenalty`), letting fresher upper lateral branches
+   eventually rival it and round out the crown top rather than tapering
+   it to a point indefinitely.
 
 All constants live in one place, `src/sim/params.ts`, documented with the
 literature/reasoning behind each.
@@ -128,6 +142,21 @@ knowledge) -- **not** internal mechanism details:
 - total leaf area and segment/bud counts stabilize rather than growing
   without bound.
 
+`tests/shape.test.ts` covers overall *architecture* (deciduous- vs.
+conifer-like) across many seeds, since forking is stochastic:
+
+- at least some seeds develop more than one co-dominant trunk by the
+  juvenile stage, and at least some don't (a possibility, not a
+  guarantee), and a forked trunk is genuinely thick, not a twig;
+- crown width holds up well into the upper crown on average instead of
+  tapering linearly to a point like a conifer;
+- the live canopy's self-pruning is roughly continuous: crown base
+  height (and a foliage-weighted mean canopy height, which is robust to
+  the strict minimum jumping the instant one twig dies) never jumps by
+  more than a small slice of the tree's eventual height in a single
+  year -- there's no one-year "cliff" where the whole lower crown
+  senesces in lockstep.
+
 ## Renderer
 
 `TreeDebugRenderer` draws one `TreeState` at a time via two
@@ -145,3 +174,19 @@ Hover picking is wired through `renderer.onHover(info)`, which receives
 the full underlying `BranchSegment`/`Bud` or `Leaf` object (not a
 pre-formatted string) so new debug information is easy to surface without
 touching the renderer itself.
+
+## Saved history file size
+
+A full year-by-year history of a decades-old tree is a lot of geometry.
+`serializeHistory`/`deserializeHistory` (`src/sim/historyCodec.ts`) use a
+lossless wire format that only stores which segments are new, changed, or
+removed each year -- everything else (including per-segment
+`hydraulicResistance`, `leaves`, and `metrics`, all of which are pure
+functions of the segment set) is dropped and recomputed on load, since a
+root-cumulative field like `hydraulicResistance` would otherwise drift by
+a tiny amount on literally every segment every year and defeat any
+attempt to skip storing the (overwhelmingly more common) unchanged ones.
+The "Download history" button additionally gzips the result
+(`CompressionStream`, falling back to plain JSON where unsupported): a
+110-year history is on the order of tens of MB uncompressed and roughly
+10-15MB gzipped, down from several hundred MB naively.

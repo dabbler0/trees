@@ -85,31 +85,51 @@ simulateBtn.addEventListener('click', () => {
   void simulate({ ...defaultParams, seed }, years);
 });
 
+// A saved history is already a compact per-year diff (see historyCodec.ts),
+// but it's still a large, highly-repetitive JSON blob (numeric arrays,
+// repeated key names for thousands of segments) that gzip compresses
+// very well. CompressionStream/DecompressionStream are supported in all
+// current major browsers; fall back to plain, uncompressed JSON if not.
+const supportsGzip = typeof CompressionStream !== 'undefined' && typeof DecompressionStream !== 'undefined';
+
+async function gzipText(text: string): Promise<Blob> {
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Response(stream).blob();
+}
+
+async function gunzipToText(blob: Blob): Promise<string> {
+  const stream = blob.stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Response(stream).text();
+}
+
 downloadBtn.addEventListener('click', () => {
-  if (!history) return;
-  const blob = new Blob([serializeHistory(history)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `tree-history-${history.species.replace(/\s+/g, '-')}-${history.states.length - 1}yr.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  void (async () => {
+    if (!history) return;
+    const json = serializeHistory(history);
+    const namePrefix = `tree-history-${history.species.replace(/\s+/g, '-')}-${history.states.length - 1}yr`;
+    const blob = supportsGzip ? await gzipText(json) : new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = supportsGzip ? `${namePrefix}.json.gz` : `${namePrefix}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  })();
 });
 
 uploadBtn.addEventListener('click', () => uploadInput.click());
 uploadInput.addEventListener('change', () => {
   const file = uploadInput.files?.[0];
   if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
+  void (async () => {
     try {
-      const h = deserializeHistory(String(reader.result));
+      const text = file.name.endsWith('.gz') ? await gunzipToText(file) : await file.text();
+      const h = deserializeHistory(text);
       loadHistory(h);
     } catch (err) {
       alert(`Could not load that file as a simulation history: ${(err as Error).message}`);
     }
-  };
-  reader.readAsText(file);
+  })();
   uploadInput.value = '';
 });
 

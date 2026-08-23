@@ -11,7 +11,7 @@ import {
   type Vec3,
 } from '../model/vec3';
 import { buildLightProfile } from './light';
-import { applyPipeModelAndMechanics } from './pipeModel';
+import { applyPipeModelAndMechanics, computeHydraulicResistances } from './pipeModel';
 import { recomputeAliveFlags, computeMetrics } from './metrics';
 import { placeLeaves } from './leaves';
 
@@ -27,7 +27,6 @@ const MAX_SEGMENTS = 120_000;
 export interface GrowthContext {
   nextSegmentId: number;
   nextBudId: number;
-  nextLeafId: number;
 }
 
 export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
@@ -61,7 +60,9 @@ export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
     ageYears: 0,
     shadeYears: 0,
   };
-  const segments = [rootSegment];
+  const segmentMap = new Map([[rootSegment.id, rootSegment]]);
+  computeHydraulicResistances(segmentMap); // keep this consistent with every later year's segments, rather than a hand-set placeholder
+  const segments = [...segmentMap.values()];
   const state: TreeState = {
     year: 0,
     segments,
@@ -69,11 +70,19 @@ export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
     leaves: [],
     metrics: computeMetrics(segments),
   };
-  return { state, ctx: { nextSegmentId: 1, nextBudId: 1, nextLeafId: 0 } };
+  return { state, ctx: { nextSegmentId: 1, nextBudId: 1 } };
 }
 
-function apexDirection(prevDir: Vec3, params: SimulationParams): Vec3 {
-  return normalize(lerp(prevDir, [0, 1, 0], params.phototropicPull));
+function apexDirection(prevDir: Vec3, order: number, params: SimulationParams): Vec3 {
+  // Only the true leader (order 0) straightens strongly toward vertical
+  // every year. A lateral that re-straightens upright just as
+  // aggressively ends up parallel to the trunk within a few seasons,
+  // producing a narrow, columnar/conifer-like silhouette; keeping most
+  // of a lateral's own outward branching angle as it continues to
+  // extend is what actually spreads a broadleaf canopy out sideways,
+  // rounding out its profile instead of tapering it to a point.
+  const pull = order === 0 ? params.phototropicPull : params.phototropicPull * 0.06;
+  return normalize(lerp(prevDir, [0, 1, 0], pull));
 }
 
 function lateralDirection(parentDir: Vec3, branchingAngle: number, azimuth: number): Vec3 {
@@ -149,7 +158,14 @@ export function stepYear(
   }
   const carbonSupply = effectiveSunlitLeafArea;
   const maintenanceCost = params.respirationPerWoodyVolume * prev.metrics.woodyVolume;
-  const netCarbon = Math.max(0, carbonSupply - maintenanceCost);
+  // A tiny reserve floor (stored starch, etc.) rather than a hard zero:
+  // real trees under carbon stress don't instantly, permanently freeze
+  // the moment respiration nominally exceeds fresh assimilation in one
+  // year's accounting -- they draw down reserves and keep making a
+  // trickle of new growth. Without this, net carbon can hit exactly
+  // zero and lock the whole tree into a single, permanently frozen
+  // snapshot rather than continuing to slowly fill out for decades.
+  const netCarbon = Math.max(carbonSupply * 0.015, carbonSupply - maintenanceCost);
 
   const buds: Bud[] = prev.buds.map((b) => ({ ...b }));
   const growthCapped = segments.size >= MAX_SEGMENTS;
@@ -177,8 +193,12 @@ export function stepYear(
   // as "shed the shadiest tenth" instead of "shed everyone below X".
   const nonDeadBuds = buds.filter((b) => b.status !== 'dead');
   const exposures = nonDeadBuds.map((b) => lightProfile.exposureAt(b.position[1])).sort((a, b) => a - b);
-  const atCarryingCapacity = nonDeadBuds.length >= params.maxActiveBuds * 0.85;
-  const percentileCutoff = atCarryingCapacity ? exposures[Math.floor(exposures.length * 0.1)] : -Infinity;
+  const capacityFraction = nonDeadBuds.length / params.maxActiveBuds;
+  const rampSpan = Math.max(1e-6, 1 - params.selfThinningOnsetFraction);
+  const thinFraction =
+    params.selfThinningMaxFraction *
+    Math.max(0, Math.min(1, (capacityFraction - params.selfThinningOnsetFraction) / rampSpan));
+  const percentileCutoff = thinFraction > 0 ? exposures[Math.floor(exposures.length * thinFraction)] : -Infinity;
 
   for (const bud of buds) {
     if (bud.status === 'dead') continue;
@@ -210,7 +230,7 @@ export function stepYear(
     bud.shadeYears = 0;
     bud.status = 'active';
 
-    const dir = applyDroop(apexDirection(bud.direction, params), bud.order, params);
+    const dir = applyDroop(apexDirection(bud.direction, bud.order, params), bud.order, params);
     candidates.push({ bud, demand, dir });
   }
 
@@ -220,6 +240,7 @@ export function stepYear(
 
   const newBuds: Bud[] = [];
   let liveBudCount = buds.filter((b) => b.status !== 'dead').length;
+  let coDominantTrunkCount = buds.filter((b) => b.order === 0 && b.status !== 'dead').length;
 
   // Pass 2: commit growth using each bud's carbon-allocated share.
   for (const { bud, demand, dir } of candidates) {
@@ -270,7 +291,17 @@ export function stepYear(
     // parameter set degrades to "the leader keeps slowly growing" rather
     // than a sudden, unrealistic freeze of the whole tree.
     for (let i = 0; i < params.nodesPerInternode && !growthCapped; i++) {
-      if (liveBudCount >= params.maxActiveBuds) break; // self-thinning: crown at carrying capacity
+      // Self-thinning caps *further* subdivision of an already-lateral
+      // branch, but the actively-extending leader always gets to throw
+      // its usual new side-shoots regardless of how full the crown is
+      // elsewhere -- exactly like a real tree, whose growing tip keeps
+      // producing fresh growth every year while interior/lower shoots
+      // are the ones that get shed to make room. Without this
+      // exemption, once the crown fills up the population cap starves
+      // new lateral formation everywhere including at the ever-rising
+      // top, leaving a bare, spire-like leader poking out of an
+      // otherwise-flat canopy (conifer-like) instead of a rounded one.
+      if (bud.order > 0 && liveBudCount >= params.maxActiveBuds) break;
       const frac = (i + 1) / (params.nodesPerInternode + 1);
       const nodePos = lerp(start, end, frac);
       const nodeExposure = lightProfile.exposureAt(nodePos[1]);
@@ -285,18 +316,38 @@ export function stepYear(
 
       const azimuth = params.phyllotacticAngle * (ctx.nextBudId + i) + (rng() - 0.5) * 0.3;
       const rawLateralDir = lateralDirection(dir, params.branchingAngle, azimuth);
-      const lateralOrder = bud.order + 1;
-      const lateralDir = applyDroop(rawLateralDir, lateralOrder, params);
+
+      // Co-dominant trunk forking: a lateral breaking off the *current*
+      // trunk axis, while the tree is still young, occasionally becomes
+      // a genuine second (or third) trunk instead of a subordinate
+      // branch -- exactly how many broadleaf saplings naturally fork low
+      // down, unlike a conifer's single permanent leader. Promoted forks
+      // are order 0 (trunk-class) from here on: same hydraulic/carbon
+      // treatment as the original leader, just competing for the same
+      // carbon budget, and only lightly de-drooped since a co-dominant
+      // stem stays fairly upright rather than arching out like an
+      // ordinary lateral.
+      const canFork =
+        bud.order === 0 &&
+        year <= params.trunkForkMaxAge &&
+        coDominantTrunkCount < params.maxCoDominantTrunks &&
+        rng() < params.trunkForkProbability;
+      const lateralOrder = canFork ? 0 : bud.order + 1;
+      const lateralDir = canFork ? rawLateralDir : applyDroop(rawLateralDir, lateralOrder, params);
+      const lateralHormonalVigor = canFork
+        ? parentHormonalVigor * params.trunkForkVigorRatio
+        : parentHormonalVigor * params.lateralVigorRatio * (0.85 + 0.3 * rng());
+      if (canFork) coDominantTrunkCount++;
 
       newBuds.push({
         id: ctx.nextBudId++,
         segmentId: newSegment.id,
-        type: 'axillary',
+        type: canFork ? 'apical' : 'axillary',
         status: 'active',
         position: nodePos,
         direction: lateralDir,
         order: lateralOrder,
-        hormonalVigor: parentHormonalVigor * params.lateralVigorRatio * (0.85 + 0.3 * rng()),
+        hormonalVigor: lateralHormonalVigor,
         vigor: 0,
         auxinLevel: parentHormonalVigor,
         lightExposure: nodeExposure,
@@ -310,7 +361,10 @@ export function stepYear(
     bud.segmentId = newSegment.id;
     bud.position = end;
     bud.direction = dir;
-    const retention = Math.max(0.85, params.apicalVigorRetention - params.lateralAgingPenalty * bud.order);
+    const retention = Math.max(
+      0.85,
+      params.apicalVigorRetention - params.lateralAgingPenalty * bud.order - params.trunkAgingPenalty
+    );
     bud.hormonalVigor = parentHormonalVigor * retention;
   }
 
@@ -368,8 +422,7 @@ export function stepYear(
   const survivingBuds = allBuds.filter((b) => survivingSegmentIds.has(b.segmentId));
 
   const segmentArray = [...segments.values()];
-  const leaves = placeLeaves(segmentArray, year, rng, { current: ctx.nextLeafId });
-  ctx.nextLeafId += leaves.length;
+  const leaves = placeLeaves(segmentArray, year);
 
   return {
     year,

@@ -1,6 +1,7 @@
 import type { SimulationHistory, SimulationParams, TreeState } from '../model/types';
 import { makeRng } from '../model/rng';
 import { createInitialState, stepYear, type GrowthContext } from './growth';
+import { decodeStates, encodeStates } from './historyCodec';
 
 /**
  * Run a full simulation from a bare seedling for `years` growing seasons.
@@ -51,8 +52,18 @@ export class SimulationRunner {
   }
 }
 
+/**
+ * Serializes to a compact wire format (see historyCodec.ts): each year
+ * stores only which segments are new/changed/removed relative to the
+ * last, and drops the `leaves`/`metrics`/per-segment
+ * `hydraulicResistance` entirely, since all three are pure functions of
+ * the segment set and are recomputed on load. The in-memory
+ * SimulationHistory/TreeState shapes this function accepts (and
+ * deserializeHistory returns) are unaffected -- this is purely a
+ * wire-format detail, and the round trip is lossless.
+ */
 export function serializeHistory(history: SimulationHistory): string {
-  return JSON.stringify(history);
+  return JSON.stringify({ ...history, states: encodeStates(history.states) });
 }
 
 export function deserializeHistory(json: string): SimulationHistory {
@@ -60,5 +71,5 @@ export function deserializeHistory(json: string): SimulationHistory {
   if (parsed.formatVersion !== 1) {
     throw new Error(`Unsupported simulation history format version: ${parsed.formatVersion}`);
   }
-  return parsed;
+  return { ...parsed, states: decodeStates(parsed.states as unknown as Parameters<typeof decodeStates>[0]) };
 }

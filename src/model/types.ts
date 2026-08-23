@@ -180,8 +180,35 @@ export interface SimulationParams {
   apicalVigorRetention: number;
   /** Extra per-year hormonal decay applied to a continuing lateral axis, scaled by its branch order. */
   lateralAgingPenalty: number;
+  /**
+   * Extra per-year hormonal decay applied to *every* continuing axis
+   * regardless of order, including the trunk. Real "decurrent" broadleaf
+   * trees gradually lose central apical control as they mature (unlike
+   * an "excurrent" conifer, which keeps a dominant leader for life):
+   * this is what lets freshly-formed upper lateral branches eventually
+   * rival an old, long-decaying leader's vigor, rounding out the crown
+   * top instead of it staying a sharp cone indefinitely.
+   */
+  trunkAgingPenalty: number;
   /** Fraction of a parent bud's hormonal vigor a new lateral bud inherits (apical dominance). */
   lateralVigorRatio: number;
+
+  // --- Co-dominant trunk forking (multi-stem architecture) ---
+  /**
+   * Probability that a lateral bud breaking off the *current* trunk axis
+   * becomes a co-dominant fork (promoted to order 0, i.e. trunk-class)
+   * instead of an ordinary order-1 lateral. Real broadleaf saplings
+   * frequently fork into two or three comparably thick low stems this
+   * way; conifers essentially never do. Applied independently at each
+   * qualifying bud-break event, so forking is possible, not guaranteed.
+   */
+  trunkForkProbability: number;
+  /** Fraction of the parent trunk's hormonal vigor a co-dominant fork inherits (close to 1 = genuinely competitive). */
+  trunkForkVigorRatio: number;
+  /** Tree age (years) beyond which new trunk forks can no longer form -- forking is a juvenile-phase phenomenon. */
+  trunkForkMaxAge: number;
+  /** Maximum number of simultaneously live trunk-class (order 0) stems. */
+  maxCoDominantTrunks: number;
 
   // --- Gravitropism / phototropism (shape) ---
   /** How strongly lateral branches droop under their own weight (0 = rigid). */
@@ -218,6 +245,19 @@ export interface SimulationParams {
    * have fully caught up with a burst of favorable growing seasons.
    */
   maxActiveBuds: number;
+  /**
+   * Self-thinning is applied as a *ramp*, not a hard on/off switch: below
+   * selfThinningOnsetFraction of maxActiveBuds, no relative (percentile)
+   * thinning happens at all; the pruned fraction then rises linearly to
+   * selfThinningMaxFraction per year as the crown fills up. A hard
+   * threshold produces an unrealistic "cliff" where the whole lower
+   * crown senesces in near-lockstep the moment capacity is crossed; the
+   * ramp spreads that transition across many years, so the live crown
+   * base rises roughly continuously instead of jumping.
+   */
+  selfThinningOnsetFraction: number;
+  /** Maximum fraction of live buds culled by relative (percentile) self-thinning in a single year. */
+  selfThinningMaxFraction: number;
   /** Years a dead branch persists before abscission (removal from the record). */
   abscissionYears: number;
 

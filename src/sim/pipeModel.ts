@@ -67,12 +67,25 @@ export function applyPipeModelAndMechanics(
     if (s.tipRadius > s.baseRadius) s.baseRadius = s.tipRadius;
   }
 
-  // Hydraulic path resistance: a simple resistor-network analogy. Sapwood
-  // is a bundle of many fine conduits, so total conductance scales with
-  // cross-sectional area (not radius^4, which is the single-pipe
-  // Hagen-Poiseuille case) -- resistance_i = length_i / area_i. Path
-  // resistance to a tip is the sum of resistances from the root down.
-  const byId = segments;
+  computeHydraulicResistances(segments);
+}
+
+/**
+ * Hydraulic path resistance: a simple resistor-network analogy. Sapwood
+ * is a bundle of many fine conduits, so total conductance scales with
+ * cross-sectional area (not radius^4, which is the single-pipe
+ * Hagen-Poiseuille case) -- resistance_i = length_i / area_i. Path
+ * resistance to a tip is the sum of resistances from the root down.
+ *
+ * Pulled out as its own pure function (a function of radius/geometry
+ * only) because it's *also* used to recompute this purely-derived field
+ * after loading a serialized history, where it's dropped from the wire
+ * format entirely: cumulative-from-root fields like this one change by a
+ * tiny amount on literally every segment whenever anything upstream
+ * grows at all, which would defeat any attempt to compactly diff one
+ * year's tree against the next (see historyCodec.ts).
+ */
+export function computeHydraulicResistances(segments: Map<number, BranchSegment>): void {
   const resistanceCache = new Map<number, number>();
   const sortedByIdAsc = [...segments.values()].sort((a, b) => a.id - b.id); // parents before children
   for (const s of sortedByIdAsc) {
@@ -83,7 +96,6 @@ export function applyPipeModelAndMechanics(
     const parentResistance = s.parentId !== null ? resistanceCache.get(s.parentId) ?? 0 : 0;
     const total = parentResistance + ownResistance;
     resistanceCache.set(s.id, total);
-    const seg = byId.get(s.id)!;
-    seg.hydraulicResistance = total;
+    segments.get(s.id)!.hydraulicResistance = total;
   }
 }

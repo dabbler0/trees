@@ -170,17 +170,17 @@
         </div>
         <div class="row">
           <label for="seed-input">Random seed</label>
-          <input id="seed-input" type="number" min="0" max="999999" value="1" />
+          <input id="seed-input" type="number" min="0" max="999999" value="2" />
         </div>
         <div class="row">
           <button id="simulate-btn">Grow new tree</button>
         </div>
         <div class="row">
-          <button id="download-btn" class="secondary">Download history (.json)</button>
+          <button id="download-btn" class="secondary">Download history (.json.gz)</button>
         </div>
         <div class="row">
-          <button id="upload-btn" class="secondary">Load history (.json)</button>
-          <input id="upload-input" type="file" accept="application/json" style="display: none" />
+          <button id="upload-btn" class="secondary">Load history (.json/.gz)</button>
+          <input id="upload-input" type="file" accept="application/json,.json,.gz" style="display: none" />
         </div>
 
         <h2>Renderer</h2>

@@ -26,27 +26,35 @@ export const defaultParams: SimulationParams = {
 
   hydraulicResistanceHalfVigor: 150000,
 
-  branchingAngle: (55 * Math.PI) / 180,
+  branchingAngle: (62 * Math.PI) / 180,
   phyllotacticAngle: (137.508 * Math.PI) / 180, // golden angle: real spiral phyllotaxis
-  nodesPerInternode: 2,
-  budBreakProbability: 0.4,
+  nodesPerInternode: 3,
+  budBreakProbability: 0.55,
   apicalVigorRetention: 0.999,
   lateralAgingPenalty: 0.0022,
+  trunkAgingPenalty: 0.0009,
   lateralVigorRatio: 0.56,
 
-  gravitropicDroop: 0.12,
-  phototropicPull: 0.06,
+  trunkForkProbability: 0.035,
+  trunkForkVigorRatio: 0.82,
+  trunkForkMaxAge: 18,
+  maxCoDominantTrunks: 3,
+
+  gravitropicDroop: 0.16,
+  phototropicPull: 0.045,
 
   pipeModelRatio: 0.00032,
-  mechanicalThickeningFactor: 0.0013,
+  mechanicalThickeningFactor: 0.002,
 
   leafAreaPerShootLength: 0.18,
   leafLifespanYears: 2,
   lightExtinctionCoefficient: 3.5,
   senescenceLightThreshold: 0.16,
   senescenceYearsTolerance: 3,
-  abscissionYears: 4,
   maxActiveBuds: 1100,
+  selfThinningOnsetFraction: 0.4,
+  selfThinningMaxFraction: 0.12,
+  abscissionYears: 4,
 
   respirationPerWoodyVolume: 90,
   carbonCostPerMeterGrowth: 0.04,
