@@ -282,6 +282,34 @@ export interface SimulationParams {
    * perfectly radially symmetric.
    */
   heliotropismStrength: number;
+  /**
+   * Random per-year perturbation (radians) applied to a *continuing*
+   * axis's growth direction before phototropicPull straightens it back
+   * toward vertical -- what actually distinguishes a conifer's
+   * ruler-straight trunk from a real deciduous tree's leaning, zigzagging
+   * one. Real apical control isn't a rigid mechanical constraint, it's a
+   * *consistency* of correction: an excurrent conifer keeps one apical
+   * meristem under strong, essentially unbroken hormonal dominance for
+   * its whole life, so tiny deviations get corrected before they add up
+   * to anything visible. A decurrent broadleaf's nominal leader has much
+   * weaker/less consistent control (and, especially, is often replaced
+   * outright -- terminal-bud dieback/abortion and takeover by a lateral,
+   * "sympodial" growth, is part of many species' normal developmental
+   * program, not just storm/frost/herbivory damage) -- see Hallé,
+   * Oldeman & Tomlinson's classic excurrent/decurrent architectural-model
+   * distinction. Either way, small early deviations, once corrected for,
+   * still leave the *already-grown* wood exactly where it was laid down
+   * (unlike a green shoot, lignified wood doesn't unbend) -- so this is a
+   * random walk with a restoring force (phototropicPull): individually
+   * tiny, zero-mean year-to-year wobbles accumulate into a real, lasting
+   * wave over a trunk's lifetime instead of averaging out. Applied
+   * identically to every continuing axis (no special-cased "trunk"),
+   * same as every other shape rule -- it just happens to read as trunk
+   * waviness because that's the axis with the longest, thickest-growing
+   * record of it. 0 = razor-straight (conifer); higher = a more
+   * wandering, leaning main stem (broadleaf).
+   */
+  trunkWaviness: number;
 
   // --- Secondary growth (thickening) ---
   /**

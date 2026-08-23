@@ -179,3 +179,33 @@ describe('the live canopy rises roughly continuously, not in a single senescence
     }
   });
 });
+
+describe('trunk waviness: a leaning/zigzagging main stem, not a ruler-straight one', () => {
+  // order===0 segments trace the single, never-relabeled lineage that
+  // started as the seedling's original leader (a co-dominant fork always
+  // gets order+1 -- see growth.ts -- so this is unaffected by whichever
+  // axis later turns out thickest). apexDirection's trunkWaviness wobble
+  // applies to every continuing axis identically, so checking this one
+  // lineage in isolation is enough to know whether the mechanism does
+  // anything at all, without getting entangled in the co-dominance system
+  // (a separate mechanism covered by the multi-trunk-forking tests above).
+  it('at trunkWaviness=0, the leader path stays exactly vertical (sanity check)', () => {
+    const straight = runSimulation({ ...defaultParams, trunkWaviness: 0, seed: 1 }, MATURE_AGE);
+    const leaderSegments = straight.states[MATURE_AGE].segments.filter((s) => s.order === 0);
+    expect(leaderSegments.length).toBeGreaterThan(0);
+    const maxDeviation = Math.max(...leaderSegments.map(radialDistance));
+    expect(maxDeviation).toBeLessThan(1e-6);
+  });
+
+  it("the default (nonzero) trunk waviness makes the leader path visibly wander, like a real broadleaf's leaning trunk rather than a conifer's straight one", () => {
+    const deviations = historiesBySeed.map((history) => {
+      const leaderSegments = history.states[MATURE_AGE].segments.filter((s) => s.order === 0);
+      return Math.max(...leaderSegments.map(radialDistance));
+    });
+    // Averaged across seeds so one unusually straight-by-luck random walk
+    // doesn't make the test flaky. A real leaning/zigzagging deciduous
+    // trunk wanders sideways by a good fraction of a meter over a
+    // multi-decade run; a conifer-like one would stay near zero.
+    expect(mean(deviations)).toBeGreaterThan(0.3);
+  });
+});

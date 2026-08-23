@@ -42,6 +42,7 @@ export const defaultParams: SimulationParams = {
   sunZenithAngle: 0,
   sunAzimuth: 0,
   heliotropismStrength: 0.5,
+  trunkWaviness: (5 * Math.PI) / 180,
 
   pipeModelRatio: 0.00032,
   mechanicalThickeningFactor: 0.002,

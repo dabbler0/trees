@@ -220,6 +220,33 @@ Each simulated year:
     horizon chasing the sun). At `sunZenithAngle = 0` (the default) this
     has no effect at all -- `sin(0) = 0` -- so the whole mechanism is
     inert unless the sun angle is actually moved off overhead.
+11. **Trunk waviness** -- real conifers and real broadleaf trees differ
+    sharply in how straight their trunks are, and it comes down to
+    *consistency* of apical control rather than a hard mechanical
+    constraint. Conifers are the textbook "excurrent" architectural
+    model (Hallé, Oldeman & Tomlinson): one apical meristem holds strong,
+    essentially unbroken hormonal dominance for the tree's entire life,
+    so tiny early deviations get corrected before they add up to
+    anything visible -- hence a pole-straight trunk. Broadleaf trees are
+    "decurrent": the nominal leader's control is weaker and far more
+    often interrupted outright (terminal-bud dieback/abortion and
+    takeover by a lateral -- "sympodial" growth -- is part of many
+    species' normal developmental program, not just storm/frost/insect
+    damage). Either way, once a deviation happens, phototropic/
+    gravitropic correction only ever acts on *future* growth from the
+    tip -- the wood already laid down doesn't unbend -- so a less
+    consistently self-correcting species accumulates a real, permanent
+    lean or zigzag over its lifetime. This is modeled as a small,
+    zero-mean random perturbation (`trunkWaviness`) applied to every
+    continuing axis's direction each year, before `phototropicPull`
+    pulls it back toward vertical: a random walk with a restoring force,
+    so individually tiny yearly wobbles compound into a lasting wave
+    instead of averaging out. `trunkWaviness = 0` reproduces a
+    conifer-straight trunk exactly; the default is a modest broadleaf-
+    like wander. Same continuous, order-agnostic rule as every other
+    shape mechanism here -- it just reads as "trunk" waviness because
+    that's whichever axis grows thick and prominent for long enough to
+    make its wobble history visible.
 
 All constants live in one place, `src/sim/params.ts`, documented with the
 literature/reasoning behind each.
@@ -234,7 +261,8 @@ would plausibly vary, rather than every internal tuning constant (see
 - **Environment** (site/season, not a species trait): sun angle from
   overhead, sun compass direction, and heliotropism strength.
 - **Species traits**: hydraulic limit (mature height), growth rate,
-  branching angle, droop/weeping habit, foliage retention (deciduous vs.
+  branching angle, droop/weeping habit, trunk waviness (conifer-straight
+  vs. broadleaf-leaning), foliage retention (deciduous vs.
   evergreen-like), shade tolerance, canopy self-shading density, forking
   tendency, foliage density per shoot, and trunk taper/wind-firmness.
 
@@ -285,7 +313,12 @@ conifer-like) across many seeds, since forking is stochastic:
   the strict minimum jumping the instant one twig dies) never jumps by
   more than a small slice of the tree's eventual height in a single
   year -- there's no one-year "cliff" where the whole lower crown
-  senesces in lockstep.
+  senesces in lockstep;
+- trunk waviness actually does something: at `trunkWaviness = 0` the
+  original leader's own lineage (`order === 0`, which a co-dominant fork
+  never relabels) stays exactly vertical, and at the default nonzero
+  setting it wanders sideways by a real, non-trivial distance over a
+  multi-decade run instead of staying needle-straight.
 
 ## Renderer
 

@@ -160,6 +160,15 @@ export const PARAM_CONTROLS: ParamControlDef[] = [
     0.02,
     (v) => v.toFixed(2)
   ),
+  angleDeg(
+    'trunkWaviness',
+    'Trunk waviness',
+    "Random per-year wobble in a growing axis's direction, before it straightens back toward vertical. 0 = ruler-straight (an excurrent conifer's unbroken apical dominance); higher = a leaning, zigzagging main stem, since a real deciduous tree's weaker/more interruptible apical control lets small deviations happen and then -- since wood never unbends once laid down -- stick around permanently.",
+    'species',
+    0,
+    12,
+    0.5
+  ),
   linear(
     'leafLifespanYears',
     'Foliage retention (years)',

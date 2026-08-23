@@ -158,7 +158,14 @@ function heightEfficiencyFactor(height: number, halfHeight: number): number {
  * and thicken toward the light under directional/oblique sun instead of
  * staying radially symmetric.
  */
-function apexDirection(prevDir: Vec3, hormonalVigor: number, exposure: number, sunDir: Vec3, params: SimulationParams): Vec3 {
+function apexDirection(
+  prevDir: Vec3,
+  hormonalVigor: number,
+  exposure: number,
+  sunDir: Vec3,
+  params: SimulationParams,
+  rng: () => number
+): Vec3 {
   // Heliotropism is a *bias* on top of gravitropism, never a replacement
   // for it: it shifts the target a shoot straightens toward from
   // straight up to "mostly up, tilted somewhat toward the sun", capped
@@ -180,7 +187,19 @@ function apexDirection(prevDir: Vec3, hormonalVigor: number, exposure: number, s
   const target: Vec3 = bend > 0 ? normalize(lerp([0, 1, 0], sunDir, bend)) : [0, 1, 0];
 
   const pull = params.phototropicPull * clamp01(hormonalVigor);
-  return normalize(lerp(prevDir, target, pull));
+  let dir = normalize(lerp(prevDir, target, pull));
+
+  // Trunk waviness: a small, zero-mean random perturbation applied
+  // *before* the correction above gets a chance to act on it -- see the
+  // field doc on trunkWaviness. Reusing lateralDirection's rotate-by-
+  // angle-at-a-random-azimuth here is exactly the same "tilt away from
+  // the current axis a bit" operation a new lateral's divergence angle
+  // uses, just at a much smaller, symmetric, unbiased magnitude instead
+  // of a fixed wide spreading angle.
+  if (params.trunkWaviness > 0) {
+    dir = lateralDirection(dir, rng() * params.trunkWaviness, rng() * Math.PI * 2);
+  }
+  return dir;
 }
 
 function lateralDirection(parentDir: Vec3, branchingAngle: number, azimuth: number): Vec3 {
@@ -385,7 +404,7 @@ export function stepYear(
     bud.shadeYears = 0;
     bud.status = 'active';
 
-    const dir = applyDroop(apexDirection(bud.direction, bud.hormonalVigor, exposure, sunDir, params), bud.hormonalVigor, params);
+    const dir = applyDroop(apexDirection(bud.direction, bud.hormonalVigor, exposure, sunDir, params, rng), bud.hormonalVigor, params);
     candidates.push({ bud, demand, dir });
   }
 
