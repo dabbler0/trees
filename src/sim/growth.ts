@@ -14,11 +14,16 @@ import { buildLightProfile } from './light';
 import { applyPipeModelAndMechanics, computeHydraulicResistances } from './pipeModel';
 import { recomputeAliveFlags, computeMetrics } from './metrics';
 import { placeLeaves } from './leaves';
+import { sunDirection } from './sun';
 
 const MIN_TWIG_RADIUS = 0.0025;
 /** Below this annual elongation (1cm), a bud just waits rather than
  * banking an ever-growing tail of near-zero-length segments. */
 const MIN_GROWTH_LENGTH = 0.01;
+/** Ground level. A bud whose natural (undrooped-clamp) trajectory would
+ * put its new tip below this dies instead of growing into the soil --
+ * see the comment at its use site below. */
+const GROUND_HEIGHT = 0.02;
 /** Hard safety cap so a pathological parameter set can't blow up memory/CPU
  * in the browser or in a long-running test; real self-shading should keep
  * well under this. */
@@ -27,6 +32,23 @@ const MAX_SEGMENTS = 120_000;
 export interface GrowthContext {
   nextSegmentId: number;
   nextBudId: number;
+  /**
+   * Exponential moving average of effectiveSunlitLeafArea (the carbon
+   * budget's supply side), standing in for stored carbohydrate reserves.
+   * A whole tree's carbon economy doesn't reset every single year from
+   * scratch -- real trees buffer year-to-year swings in photosynthesis
+   * with stored starch. Smoothing supply this way is what keeps an
+   * ordinary, one-off population correction (self-thinning pruning a
+   * batch of buds, say) from reading as a sudden income crash that
+   * starves *everyone* a little more, prunes a few more buds, and so on
+   * into a runaway carbon-starvation spiral -- the tree can coast through
+   * a temporary dip on reserves while its canopy recovers, same as a
+   * real one would. Not part of TreeState/serialization: it's an
+   * in-memory-only smoothing signal for a continuous run, and every
+   * simulation always starts fresh from a bare seedling (see
+   * createInitialState) rather than resuming mid-history.
+   */
+  smoothedCarbonSupply: number;
 }
 
 export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
@@ -36,7 +58,7 @@ export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
     childIds: [],
     order: 0,
     start: [0, 0, 0],
-    end: [0, 0.02, 0],
+    end: [0, GROUND_HEIGHT, 0],
     baseRadius: MIN_TWIG_RADIUS,
     tipRadius: MIN_TWIG_RADIUS,
     createdYear: 0,
@@ -50,7 +72,7 @@ export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
     segmentId: 0,
     type: 'apical',
     status: 'active',
-    position: [0, 0.02, 0],
+    position: [0, GROUND_HEIGHT, 0],
     direction: [0, 1, 0],
     order: 0,
     hormonalVigor: 1,
@@ -59,6 +81,7 @@ export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
     lightExposure: 1,
     ageYears: 0,
     shadeYears: 0,
+    stalledYears: 0,
   };
   const segmentMap = new Map([[rootSegment.id, rootSegment]]);
   computeHydraulicResistances(segmentMap); // keep this consistent with every later year's segments, rather than a hand-set placeholder
@@ -70,17 +93,10 @@ export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
     leaves: [],
     metrics: computeMetrics(segments),
   };
-  return { state, ctx: { nextSegmentId: 1, nextBudId: 1 } };
+  return { state, ctx: { nextSegmentId: 1, nextBudId: 1, smoothedCarbonSupply: 0 } };
 }
 
 const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
-
-/** Unit vector from the tree toward the sun, given the site's zenith/azimuth. */
-function sunDirection(params: SimulationParams): Vec3 {
-  const sinZ = Math.sin(params.sunZenithAngle);
-  const cosZ = Math.cos(params.sunZenithAngle);
-  return [sinZ * Math.cos(params.sunAzimuth), cosZ, sinZ * Math.sin(params.sunAzimuth)];
-}
 
 /**
  * Phototropic straightening scales with an axis's own persistent
@@ -136,10 +152,30 @@ function lateralDirection(parentDir: Vec3, branchingAngle: number, azimuth: numb
 
 /** Gravitropic droop, symmetrically: a vigorous axis is stiffer/better
  * supported and droops little; a weak one sags more. Same continuous,
- * order-and-trunk-agnostic rule as apexDirection above. */
+ * order-and-trunk-agnostic rule as apexDirection above.
+ *
+ * The *equilibrium* sag this converges to is bounded by gravitropicDroop
+ * itself, not just how fast each year approaches it: lerping the live
+ * direction toward straight down ([0,-1,0]) every single year, with no
+ * floor, means *any* persistently low-vigor bud -- not just a heavily
+ * weeping species -- eventually converges arbitrarily close to hanging
+ * straight down given enough consecutive low-vigor years, however small
+ * the species' own droop trait is set to. A real sagging branch settles
+ * at a finite angle set by its own species habit and gets progressively
+ * stiffer as it thickens; it doesn't keep sagging toward vertical forever
+ * just because it stayed subordinate for decades. Clamping the drooped
+ * direction's vertical component at -gravitropicDroop keeps the
+ * long-run sag angle tied to the species trait (0 = never sags past
+ * level; a weeping species' max setting sags well past horizontal) no
+ * matter how many years of compounding droop a given bud accumulates. */
 function applyDroop(dir: Vec3, hormonalVigor: number, params: SimulationParams): Vec3 {
   const amount = params.gravitropicDroop * clamp01(1 - hormonalVigor);
-  return normalize(lerp(dir, [0, -1, 0], amount));
+  const drooped = normalize(lerp(dir, [0, -1, 0], amount));
+  const minVertical = -params.gravitropicDroop;
+  if (drooped[1] >= minVertical) return drooped;
+  const horizLen = Math.hypot(drooped[0], drooped[2]) || 1e-9;
+  const horizScale = Math.sqrt(Math.max(0, 1 - minVertical * minVertical)) / horizLen;
+  return normalize([drooped[0] * horizScale, minVertical, drooped[2] * horizScale]);
 }
 
 /**
@@ -198,11 +234,20 @@ export function stepYear(
   let effectiveSunlitLeafArea = 0;
   for (const s of prev.segments) {
     if (s.leafArea <= 0) continue;
-    const mid = (s.start[1] + s.end[1]) / 2;
+    const mid: Vec3 = [(s.start[0] + s.end[0]) / 2, (s.start[1] + s.end[1]) / 2, (s.start[2] + s.end[2]) / 2];
     effectiveSunlitLeafArea += s.leafArea * lightProfile.exposureAt(mid);
   }
-  const carbonSupply = effectiveSunlitLeafArea;
-  const maintenanceCost = params.respirationPerWoodyVolume * prev.metrics.woodyVolume;
+  // Smoothed rather than this year's raw value (see GrowthContext.
+  // smoothedCarbonSupply): a whole tree's carbon economy carries reserves
+  // across years instead of resetting from scratch every season.
+  const smoothingRate = 0.08;
+  ctx.smoothedCarbonSupply += (effectiveSunlitLeafArea - ctx.smoothedCarbonSupply) * smoothingRate;
+  const carbonSupply = ctx.smoothedCarbonSupply;
+  // Charged against *living* wood only (see TreeMetrics.liveWoodyVolume):
+  // dead wood awaiting abscission doesn't respire, so a spike in recent
+  // deaths shouldn't itself inflate the tree's own maintenance bill on
+  // top of costing it the leaf area.
+  const maintenanceCost = params.respirationPerWoodyVolume * prev.metrics.liveWoodyVolume;
   // A tiny reserve floor (stored starch, etc.) rather than a hard zero:
   // real trees under carbon stress don't instantly, permanently freeze
   // the moment respiration nominally exceeds fresh assimilation in one
@@ -237,7 +282,7 @@ export function stepYear(
   // *rank* comes straight from the Beer-Lambert exposure), just applied
   // as "shed the shadiest tenth" instead of "shed everyone below X".
   const nonDeadBuds = buds.filter((b) => b.status !== 'dead');
-  const exposures = nonDeadBuds.map((b) => lightProfile.exposureAt(b.position[1])).sort((a, b) => a - b);
+  const exposures = nonDeadBuds.map((b) => lightProfile.exposureAt(b.position)).sort((a, b) => a - b);
   const capacityFraction = nonDeadBuds.length / params.maxActiveBuds;
   const rampSpan = Math.max(1e-6, 1 - params.selfThinningOnsetFraction);
   const thinFraction =
@@ -251,12 +296,26 @@ export function stepYear(
     const segment = segments.get(bud.segmentId);
     const resistance = segment?.hydraulicResistance ?? 0;
     const hydraulicFactor = params.hydraulicResistanceHalfVigor / (params.hydraulicResistanceHalfVigor + resistance);
-    const exposure = lightProfile.exposureAt(bud.position[1]);
+    const exposure = lightProfile.exposureAt(bud.position);
     const demand = Math.max(0, Math.min(1, bud.hormonalVigor * hydraulicFactor));
 
     bud.auxinLevel = bud.hormonalVigor;
     bud.lightExposure = exposure;
     bud.ageYears += 1;
+
+    // Trunk occlusion: independent of light entirely. A branch that's
+    // stayed down in the "low zone" near the trunk's base for a long
+    // time dies as the thickening trunk progressively overtakes/occludes
+    // its base (bark inclusion pinching off its vascular connection) --
+    // real and distinct from shading, and it's what keeps a low,
+    // reasonably-lit-but-marginal branch near the base from persisting
+    // indefinitely purely because the shadow-casting light model never
+    // happens to find much directly overhead at its specific spot.
+    if (bud.position[1] < params.lowBranchOcclusionHeight && bud.ageYears > params.lowBranchOcclusionAge) {
+      bud.status = 'dead';
+      bud.vigor = 0;
+      continue;
+    }
 
     // Senescence (self-pruning) is a *local* carbon-balance phenomenon: a
     // branch dies when it can no longer photosynthesize enough to cover
@@ -301,13 +360,51 @@ export function stepYear(
       // exactly mirroring how a real hydraulically-saturated tree's
       // annual height increment shrinks toward (but need not reach)
       // zero.
+      bud.stalledYears += 1;
+      // Gated by hormonalVigor, not applied uniformly to every stalled
+      // bud: a hydraulically-plateaued but still-dominant leader (high
+      // hormonalVigor) is *supposed* to coast at a near-zero annual
+      // increment forever -- that's the whole hydraulic-limitation
+      // height-plateau mechanism, and it must never trip this. A
+      // genuinely subordinate bud (low hormonalVigor) gets a much
+      // shorter tolerance: real spur shoots have a finite productive
+      // lifespan even in good light (temperate fruit-tree physiology
+      // puts it at roughly 5-15 years), and without this a stalled,
+      // clearly-subordinate bud that happens to sit somewhere the
+      // shadow-casting light model never finds anything genuinely
+      // overhead (a low, off-center twig under a still-sparse young
+      // canopy, say) could otherwise coast at "barely alive, adding
+      // nothing" indefinitely.
+      const toleratedStallYears = params.spurSenescenceYears / Math.max(0.02, 1 - bud.hormonalVigor);
+      if (bud.stalledYears >= toleratedStallYears) {
+        bud.status = 'dead';
+      }
       continue;
     }
+    bud.stalledYears = 0;
 
     const parentSegment = segments.get(bud.segmentId)!;
     const start = bud.position;
     const rawEnd = add(start, scale(dir, length));
-    const end: Vec3 = [rawEnd[0], Math.max(0.02, rawEnd[1]), rawEnd[2]]; // never grow into the ground
+
+    if (rawEnd[1] < GROUND_HEIGHT) {
+      // A branch this low-vigor and steeply drooped that its natural
+      // trajectory would put it into the soil isn't a real growth habit --
+      // it's dead wood (buried, abraded, pathogen-prone) well before this
+      // point. Kill it here instead of clamping the endpoint to the
+      // ground and letting it "crawl" sideways along the surface forever:
+      // without this, a persistently low-hormonal-vigor lateral can keep
+      // drooping (applyDroop) until its direction is nearly straight down
+      // while still carrying just enough vigor to add a sliver of growth
+      // every year, and -- since a point sitting right at ground level
+      // rarely has anything genuinely overhead to shade it under the
+      // shadow-casting light model -- it would otherwise never senesce on
+      // its own.
+      bud.status = 'dead';
+      bud.vigor = 0;
+      continue;
+    }
+    const end: Vec3 = rawEnd;
 
     const newSegment: BranchSegment = {
       id: ctx.nextSegmentId++,
@@ -342,7 +439,7 @@ export function stepYear(
       if (liveBudCount >= params.maxActiveBuds) break;
       const frac = (i + 1) / (params.nodesPerInternode + 1);
       const nodePos = lerp(start, end, frac);
-      const nodeExposure = lightProfile.exposureAt(nodePos[1]);
+      const nodeExposure = lightProfile.exposureAt(nodePos);
       // Apical dominance throttles branching rate itself, not just the
       // resulting branch's eventual vigor: a strongly dominant, high
       // hormonal-vigor apex suppresses bud break nearby, while a
@@ -391,6 +488,7 @@ export function stepYear(
         lightExposure: nodeExposure,
         ageYears: 0,
         shadeYears: 0,
+        stalledYears: 0,
       });
       liveBudCount++;
     }

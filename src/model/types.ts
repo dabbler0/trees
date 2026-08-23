@@ -69,6 +69,16 @@ export interface Bud {
   ageYears: number;
   /** Consecutive years this bud's realized vigor has been below minViableVigor. Drives senescence. */
   shadeYears: number;
+  /**
+   * Consecutive years this bud has been carbon/hydraulically stalled
+   * below a whole new growth increment (MIN_GROWTH_LENGTH) -- i.e. years
+   * spent as a non-elongating "spur" rather than genuinely dead or
+   * actively extending. Drives spur senescence (spurSenescenceYears):
+   * even a bud that's getting perfectly good light doesn't coast at
+   * "barely alive, adding nothing" forever, matching how real spur
+   * shoots have a finite productive lifespan regardless of light.
+   */
+  stalledYears: number;
 }
 
 /**
@@ -121,6 +131,16 @@ export interface TreeMetrics {
   deadSegmentCount: number;
   /** Sum of segment volumes (a crude proxy for woody biomass), m^3. */
   woodyVolume: number;
+  /**
+   * Sum of segment volumes restricted to `alive` wood (still bearing
+   * foliage, or still structurally supporting some living descendant),
+   * m^3. Real maintenance respiration is a property of living sapwood,
+   * not of standing dead wood awaiting abscission -- this is what the
+   * carbon budget charges upkeep against, so a spike in recent deaths
+   * doesn't itself inflate the tree's own respiration bill on top of
+   * costing it the leaf area.
+   */
+  liveWoodyVolume: number;
 }
 
 export interface TreeState {
@@ -287,6 +307,31 @@ export interface SimulationParams {
   selfThinningMaxFraction: number;
   /** Years a dead branch persists before abscission (removal from the record). */
   abscissionYears: number;
+  /**
+   * A bud that's gone this many consecutive years without managing a
+   * whole new growth increment (a non-elongating "spur") senesces
+   * regardless of how well-lit it currently is. Real spur shoots have a
+   * finite productive lifespan even in good light (temperate fruit-tree
+   * physiology puts it at roughly 5-15 years); this is also what keeps a
+   * stalled bud from coasting forever purely because the geometric
+   * shadow-casting light model never happens to find anything genuinely
+   * overhead at its specific spot -- age, not just light, eventually
+   * retires an unproductive growing point.
+   */
+  spurSenescenceYears: number;
+  /**
+   * A bud that's stayed below lowBranchOcclusionHeight for more than
+   * this many years dies, independent of light. Real low branches near
+   * a trunk's base don't only lose out to shade: as the trunk keeps
+   * thickening via secondary growth (see pipeModel.ts), a nearby low
+   * branch's own base gets progressively overtaken/occluded (bark
+   * inclusion), pinching off its vascular connection -- a well-documented
+   * mechanism distinct from light competition. Modeled as a simple
+   * height+age rule rather than literally tracking trunk-radius overlap.
+   */
+  lowBranchOcclusionAge: number;
+  /** Height (m) below which a persisting low branch is at risk of trunk occlusion; see lowBranchOcclusionAge. */
+  lowBranchOcclusionHeight: number;
 
   // --- Whole-tree carbon budget (growth-efficiency-decline mechanism) ---
   /**

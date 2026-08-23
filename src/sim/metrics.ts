@@ -61,6 +61,7 @@ export function computeMetrics(segments: readonly BranchSegment[]): TreeMetrics 
   let liveSegmentCount = 0;
   let deadSegmentCount = 0;
   let woodyVolume = 0;
+  let liveWoodyVolume = 0;
 
   for (const s of segments) {
     totalLeafArea += s.leafArea;
@@ -75,7 +76,9 @@ export function computeMetrics(segments: readonly BranchSegment[]): TreeMetrics 
     const len = distance(s.start, s.end);
     const r1 = s.baseRadius;
     const r2 = s.tipRadius;
-    woodyVolume += ((Math.PI * len) / 3) * (r1 * r1 + r1 * r2 + r2 * r2);
+    const volume = ((Math.PI * len) / 3) * (r1 * r1 + r1 * r2 + r2 * r2);
+    woodyVolume += volume;
+    if (s.alive) liveWoodyVolume += volume;
   }
 
   if (totalLeafArea === 0) crownBaseHeight = height; // fully dormant/leafless tree
@@ -89,5 +92,6 @@ export function computeMetrics(segments: readonly BranchSegment[]): TreeMetrics 
     liveSegmentCount,
     deadSegmentCount,
     woodyVolume,
+    liveWoodyVolume,
   };
 }

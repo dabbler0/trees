@@ -26,7 +26,7 @@ export const defaultParams: SimulationParams = {
 
   hydraulicResistanceHalfVigor: 150000,
 
-  branchingAngle: (62 * Math.PI) / 180,
+  branchingAngle: (68 * Math.PI) / 180,
   phyllotacticAngle: (137.508 * Math.PI) / 180, // golden angle: real spiral phyllotaxis
   nodesPerInternode: 3,
   budBreakProbability: 0.55,
@@ -55,6 +55,9 @@ export const defaultParams: SimulationParams = {
   selfThinningOnsetFraction: 0.4,
   selfThinningMaxFraction: 0.12,
   abscissionYears: 4,
+  spurSenescenceYears: 10,
+  lowBranchOcclusionAge: 15,
+  lowBranchOcclusionHeight: 1.4,
 
   respirationPerWoodyVolume: 90,
   carbonCostPerMeterGrowth: 0.04,

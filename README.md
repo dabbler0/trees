@@ -61,18 +61,54 @@ A tree is:
 
 Each simulated year:
 
-1. **Light competition** -- a Beer-Lambert canopy light model bins
-   foliage into horizontal layers and attenuates exposure with
-   cumulative leaf area above each point (standard forest-canopy
-   approximation).
+1. **Light competition via real shadow-casting** -- exposure at any point
+   is computed with an actual shadow-map, the same technique real-time
+   renderers use for directional shadows: every leaf-bearing point is
+   projected into a 2D grid of columns perpendicular to a light
+   direction, each column is sorted and prefix-summed by depth along that
+   direction, and a query point binary-searches its own column for how
+   much leaf area sits between it and the light. This replaced an earlier
+   height-only heuristic (cumulative leaf area strictly above a height,
+   regardless of horizontal position) with something that genuinely
+   depends on the sun's direction (`sunZenithAngle`/`sunAzimuth`) and on
+   *where* a point sits relative to the rest of the canopy, not just how
+   high up it is -- and gives future obstructions/competition (another
+   tree, a building, terrain) a natural home: anything that can
+   contribute `{ position, area }` shading sources to the same index
+   would occlude light with no change to how a query works. A single
+   direction (straight at the sun) turns out to badly under-shade a real,
+   laterally-spreading crown -- a low bud has almost nothing from a wide
+   canopy directly in its own narrow overhead column, even though a dense
+   dome of foliage overhead should be blocking most of the sky. So
+   exposure is a weighted blend of shadow maps built along several fixed
+   directions spanning the upper hemisphere (a "diffuse sky" component,
+   most of the weight -- the same reasoning behind hemispherical-
+   photography/gap-fraction LAI instruments used in real forestry, which
+   look at the whole sky rather than just the sun's disc) plus one more
+   built along the actual sun direction (the "direct beam" component,
+   which is what makes the sun-angle parameter visibly steer
+   shading/heliotropism). Each direction still uses the same
+   Beer-Lambert extinction law (`exposure = exp(-k * LAI)`) standard in
+   forest canopy models -- just computed from real shadow geometry
+   instead of a height-only proxy. See `src/sim/light.ts`.
 2. **Whole-tree carbon budget** -- annual carbon supply is last year's
    *sunlit* leaf area; the sink is maintenance respiration on standing
    woody volume (Ryan & Yoder 1997's growth-efficiency-decline
    mechanism: bigger trees spend more of their budget just maintaining
-   existing wood). Net carbon is divided across every demanding bud in
-   proportion to its hormonal/hydraulic weight -- real source-sink
-   allocation -- which is what keeps total new growth bounded by
-   photosynthetic capacity instead of individual local rules alone.
+   existing wood, and is charged only against *living* wood -- standing
+   dead wood awaiting abscission doesn't respire). Net carbon is divided
+   across every demanding bud in proportion to its hormonal/hydraulic
+   weight -- real source-sink allocation -- which is what keeps total new
+   growth bounded by photosynthetic capacity instead of individual local
+   rules alone. Supply is smoothed year to year (an exponential moving
+   average, standing in for stored carbohydrate reserves) rather than
+   reacting instantly to this year's raw sunlit leaf area: a real tree's
+   carbon economy doesn't reset from scratch every season, and without
+   this an ordinary population correction (self-thinning pruning a batch
+   of buds, say) reads as a sudden income crash that starves everyone a
+   little more, prunes a few more buds, and spirals -- the smoothing lets
+   the tree coast through a temporary dip on reserves while its canopy
+   recovers, same as a real one would.
 3. **Apical dominance** -- each bud carries a persistent `hormonalVigor`
    that a continuing axis mostly retains and a new lateral inherits at a
    steep discount (occasionally much less of a discount -- see
@@ -96,6 +132,22 @@ Each simulated year:
    ~10% once the crown is near carrying capacity -- a Reineke
    self-thinning rule) dies; its wood is abscised a few years later if it
    never grew children. This is what raises the crown base over time.
+   Two more senescence rules apply independent of light: a bud that's
+   gone many consecutive years without managing a whole new growth
+   increment (a stalled, non-elongating "spur") eventually senesces
+   regardless of how well-lit it currently is -- gated by hormonal vigor,
+   so a hydraulically-plateaued but still-dominant leader that's
+   *supposed* to coast at a near-zero annual increment forever (the
+   height-plateau mechanism above) never trips it, while a genuinely
+   subordinate bud does after a shorter tolerance, matching how real spur
+   shoots have a finite productive lifespan even in good light. And a
+   bud that stays down in the low zone near the trunk's base for too long
+   dies as the thickening trunk progressively occludes it (bark
+   inclusion pinching off its vascular connection) -- a real,
+   well-documented mechanism distinct from shading, and what keeps a low,
+   reasonably-lit-but-marginal branch from persisting indefinitely purely
+   because the shadow-casting light model above never happens to find
+   much directly overhead at its specific spot.
 6. **Secondary growth (thickening)** -- the pipe model / Da Vinci's rule
    (Shinozaki et al. 1964): required sapwood cross-section accumulates
    bottom-up from distal leaf-area demand, plus a Greenhill-style
@@ -127,7 +179,20 @@ Each simulated year:
    a canopy out sideways into a rounded silhouette instead of a narrow,
    conifer-like column -- and nothing stops even a long-dominant "trunk"
    from wobbling, since it's the same lerp-toward-vertical as everywhere
-   else, not a hard override.
+   else, not a hard override. The droop *rate* scales with vigor, but the
+   long-run equilibrium sag angle is bounded by the species' own
+   `gravitropicDroop` trait, not just how fast each year approaches it:
+   without that floor, any persistently low-vigor bud -- not just a
+   heavily weeping species -- would eventually converge arbitrarily close
+   to hanging straight down given enough consecutive low-vigor years,
+   however small the species' droop trait is set to, since nothing else
+   bounds where the yearly lerp toward "straight down" ends up over an
+   unbounded number of years. Relatedly, a bud whose natural (undrooped)
+   trajectory would put its next growth increment into the soil dies
+   instead of clamping to ground level and continuing: without that, a
+   heavily-drooped, low-vigor lateral could otherwise "crawl" sideways
+   along the surface indefinitely, adding a sliver of horizontal growth
+   every year forever.
 9. **Waning apical control** -- a leader's hormonal dominance erodes
    gradually with age (`trunkAgingPenalty`), unlike an excurrent
    conifer's permanent one, letting fresher branches eventually rival an
