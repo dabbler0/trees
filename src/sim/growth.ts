@@ -73,15 +73,22 @@ export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
   return { state, ctx: { nextSegmentId: 1, nextBudId: 1 } };
 }
 
-function apexDirection(prevDir: Vec3, order: number, params: SimulationParams): Vec3 {
-  // Only the true leader (order 0) straightens strongly toward vertical
-  // every year. A lateral that re-straightens upright just as
-  // aggressively ends up parallel to the trunk within a few seasons,
-  // producing a narrow, columnar/conifer-like silhouette; keeping most
-  // of a lateral's own outward branching angle as it continues to
-  // extend is what actually spreads a broadleaf canopy out sideways,
-  // rounding out its profile instead of tapering it to a point.
-  const pull = order === 0 ? params.phototropicPull : params.phototropicPull * 0.06;
+const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
+
+/**
+ * Phototropic straightening scales with an axis's own persistent
+ * hormonal vigor, not with a hardcoded "is this the trunk" check: a
+ * still-dominant axis (whatever its branch order, or how it came to be
+ * dominant -- the original leader, or a co-dominant fork) holds a
+ * strong vertical bias, while a weaker one drifts more. This is a
+ * continuous, self-similar rule applied identically everywhere in the
+ * tree, so a "trunk" is whichever axis ends up with the most vigor over
+ * time, an emergent outcome rather than a privileged label -- and nothing
+ * stops that axis from wobbling, since it's still just a lerp toward
+ * vertical, not a hard override.
+ */
+function apexDirection(prevDir: Vec3, hormonalVigor: number, params: SimulationParams): Vec3 {
+  const pull = params.phototropicPull * clamp01(hormonalVigor);
   return normalize(lerp(prevDir, [0, 1, 0], pull));
 }
 
@@ -92,9 +99,11 @@ function lateralDirection(parentDir: Vec3, branchingAngle: number, azimuth: numb
   return normalize(rotateAroundAxis(parentDir, axis, branchingAngle));
 }
 
-function applyDroop(dir: Vec3, order: number, params: SimulationParams): Vec3 {
-  if (order === 0) return dir;
-  const amount = params.gravitropicDroop * Math.min(1, order / 3);
+/** Gravitropic droop, symmetrically: a vigorous axis is stiffer/better
+ * supported and droops little; a weak one sags more. Same continuous,
+ * order-and-trunk-agnostic rule as apexDirection above. */
+function applyDroop(dir: Vec3, hormonalVigor: number, params: SimulationParams): Vec3 {
+  const amount = params.gravitropicDroop * clamp01(1 - hormonalVigor);
   return normalize(lerp(dir, [0, -1, 0], amount));
 }
 
@@ -230,7 +239,7 @@ export function stepYear(
     bud.shadeYears = 0;
     bud.status = 'active';
 
-    const dir = applyDroop(apexDirection(bud.direction, bud.order, params), bud.order, params);
+    const dir = applyDroop(apexDirection(bud.direction, bud.hormonalVigor, params), bud.hormonalVigor, params);
     candidates.push({ bud, demand, dir });
   }
 
@@ -240,7 +249,6 @@ export function stepYear(
 
   const newBuds: Bud[] = [];
   let liveBudCount = buds.filter((b) => b.status !== 'dead').length;
-  let coDominantTrunkCount = buds.filter((b) => b.order === 0 && b.status !== 'dead').length;
 
   // Pass 2: commit growth using each bud's carbon-allocated share.
   for (const { bud, demand, dir } of candidates) {
@@ -291,17 +299,11 @@ export function stepYear(
     // parameter set degrades to "the leader keeps slowly growing" rather
     // than a sudden, unrealistic freeze of the whole tree.
     for (let i = 0; i < params.nodesPerInternode && !growthCapped; i++) {
-      // Self-thinning caps *further* subdivision of an already-lateral
-      // branch, but the actively-extending leader always gets to throw
-      // its usual new side-shoots regardless of how full the crown is
-      // elsewhere -- exactly like a real tree, whose growing tip keeps
-      // producing fresh growth every year while interior/lower shoots
-      // are the ones that get shed to make room. Without this
-      // exemption, once the crown fills up the population cap starves
-      // new lateral formation everywhere including at the ever-rising
-      // top, leaving a bare, spire-like leader poking out of an
-      // otherwise-flat canopy (conifer-like) instead of a rounded one.
-      if (bud.order > 0 && liveBudCount >= params.maxActiveBuds) break;
+      // Self-thinning (crown at carrying capacity) applies uniformly to
+      // every axis -- no exemption for any particular branch, order, or
+      // age, so the population cap doesn't itself introduce a bias
+      // toward one privileged axis over any other.
+      if (liveBudCount >= params.maxActiveBuds) break;
       const frac = (i + 1) / (params.nodesPerInternode + 1);
       const nodePos = lerp(start, end, frac);
       const nodeExposure = lightProfile.exposureAt(nodePos[1]);
@@ -317,32 +319,32 @@ export function stepYear(
       const azimuth = params.phyllotacticAngle * (ctx.nextBudId + i) + (rng() - 0.5) * 0.3;
       const rawLateralDir = lateralDirection(dir, params.branchingAngle, azimuth);
 
-      // Co-dominant trunk forking: a lateral breaking off the *current*
-      // trunk axis, while the tree is still young, occasionally becomes
-      // a genuine second (or third) trunk instead of a subordinate
-      // branch -- exactly how many broadleaf saplings naturally fork low
-      // down, unlike a conifer's single permanent leader. Promoted forks
-      // are order 0 (trunk-class) from here on: same hydraulic/carbon
-      // treatment as the original leader, just competing for the same
-      // carbon budget, and only lightly de-drooped since a co-dominant
-      // stem stays fairly upright rather than arching out like an
-      // ordinary lateral.
-      const canFork =
-        bud.order === 0 &&
-        year <= params.trunkForkMaxAge &&
-        coDominantTrunkCount < params.maxCoDominantTrunks &&
-        rng() < params.trunkForkProbability;
-      const lateralOrder = canFork ? 0 : bud.order + 1;
-      const lateralDir = canFork ? rawLateralDir : applyDroop(rawLateralDir, lateralOrder, params);
-      const lateralHormonalVigor = canFork
-        ? parentHormonalVigor * params.trunkForkVigorRatio
+      // Co-dominance: a newly-breaking lateral occasionally inherits a
+      // much larger share of its parent's vigor than usual, making it a
+      // genuine competing peer instead of a clearly subordinate branch.
+      // This single rule is applied identically at every branch point in
+      // the tree, at any order or age -- there's no separate "trunk"
+      // concept -- so a young tree forking into multiple comparably
+      // thick stems (as real broadleaf saplings often do) is one
+      // instance of the same scale-invariant branching rule everywhere
+      // else in the canopy, not a special case reserved for a
+      // privileged central axis. Whether a given co-dominance event ends
+      // up visually significant is an emergent function of when/where it
+      // happens (early and low means it can still capture a large share
+      // of the whole tree's future growth; deep in an already-slender
+      // twig it just reads as a slightly thicker twig), not of any
+      // hardcoded order check.
+      const isCoDominant = rng() < params.coDominanceProbability;
+      const lateralHormonalVigor = isCoDominant
+        ? parentHormonalVigor * params.coDominantVigorRatio * (0.9 + 0.2 * rng())
         : parentHormonalVigor * params.lateralVigorRatio * (0.85 + 0.3 * rng());
-      if (canFork) coDominantTrunkCount++;
+      const lateralOrder = bud.order + 1;
+      const lateralDir = applyDroop(rawLateralDir, lateralHormonalVigor, params);
 
       newBuds.push({
         id: ctx.nextBudId++,
         segmentId: newSegment.id,
-        type: canFork ? 'apical' : 'axillary',
+        type: 'axillary',
         status: 'active',
         position: nodePos,
         direction: lateralDir,
@@ -390,9 +392,7 @@ export function stepYear(
 
   recomputeAliveFlags(segments);
 
-  let treeHeight = 0;
-  for (const s of segments.values()) treeHeight = Math.max(treeHeight, s.start[1], s.end[1]);
-  applyPipeModelAndMechanics(segments, treeHeight, params);
+  applyPipeModelAndMechanics(segments, params);
 
   // Abscission: drop long-dead, childless twigs so the record doesn't grow
   // without bound. Larger dead limbs (which do have children, or children

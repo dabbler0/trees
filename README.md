@@ -74,11 +74,16 @@ Each simulated year:
    allocation -- which is what keeps total new growth bounded by
    photosynthetic capacity instead of individual local rules alone.
 3. **Apical dominance** -- each bud carries a persistent `hormonalVigor`
-   that a continuing leader mostly retains and a new lateral inherits at
-   a steep discount, with an additional per-year aging penalty on lateral
-   axes so that actively-extending, thin growth stays concentrated
-   toward the current top of the tree rather than old low branches
-   indefinitely re-sprouting as much as the leader.
+   that a continuing axis mostly retains and a new lateral inherits at a
+   steep discount (occasionally much less of a discount -- see
+   "co-dominance" below), with an additional per-year aging penalty
+   scaled by branch order so that actively-extending, thin growth stays
+   concentrated toward whichever axes are currently most active rather
+   than old branches indefinitely re-sprouting as much as a fresher one.
+   This rule is identical for every axis in the tree -- there's no
+   separate "trunk" concept; whichever axis happens to retain the most
+   vigor over time is the trunk, an emergent outcome instead of a
+   hardcoded label.
 4. **Hydraulic limitation** -- a bud's realized vigor is scaled by
    `R_half / (R_half + pathResistance)`, where path resistance
    accumulates as `length / cross-sectional area` from root to tip. This
@@ -94,26 +99,40 @@ Each simulated year:
 6. **Secondary growth (thickening)** -- the pipe model / Da Vinci's rule
    (Shinozaki et al. 1964): required sapwood cross-section accumulates
    bottom-up from distal leaf-area demand, plus a Greenhill-style
-   `radius ~ height^1.5` mechanical floor on the trunk for
-   self-support. Radius never shrinks.
-7. **Phyllotaxis / branching geometry** -- lateral buds are placed along
-   each new internode at a golden-angle (137.5°) spiral with a
-   configurable branching angle, plus gravitropic droop. Only the true
-   leader straightens strongly toward vertical each year (phototropism);
-   a lateral keeps most of its own outward angle as it keeps extending,
-   which is what actually spreads a canopy out sideways into a rounded
-   silhouette instead of a narrow, conifer-like column.
-8. **Co-dominant trunk forking** -- a lateral breaking off the *current*
-   trunk axis, while the tree is still young, occasionally (not
-   guaranteed) becomes a second or third genuinely co-dominant trunk
-   instead of a subordinate branch, exactly how many broadleaf saplings
-   naturally fork low down; a conifer's single permanent leader never
-   does this.
-9. **Waning apical control** -- unlike an excurrent conifer, a broadleaf
-   ("decurrent") leader's hormonal dominance erodes gradually with age
-   (`trunkAgingPenalty`), letting fresher upper lateral branches
-   eventually rival it and round out the crown top rather than tapering
-   it to a point indefinitely.
+   `radius ~ height^1.5` mechanical floor scaled by how much height each
+   segment's *own* subtree reaches above it (not a fixed "trunk" axis --
+   any segment carrying a lot of height on its shoulders gets a strong
+   floor, from the same formula whether it's the original leader or a
+   co-dominant fork). Radius never shrinks.
+7. **Co-dominance** -- a newly-breaking lateral occasionally inherits a
+   much larger share of its parent's vigor than usual, making it a
+   genuine competing peer instead of a clearly subordinate branch. This
+   single rule is applied identically at *every* branch point in the
+   tree, at any order or age -- not a special case reserved for "the
+   trunk" -- so a young tree forking into multiple comparably thick
+   stems (as real broadleaf saplings often do) is one instance of the
+   same scale-invariant branching rule used everywhere else in the
+   canopy. Whether a given event ends up visually significant is an
+   emergent function of when/where it happens and how it fares in later
+   light competition, not of a hardcoded order check -- avoiding any
+   hub-and-spoke bias toward a single privileged central axis.
+8. **Phyllotaxis / branching geometry and phototropism/gravitropism** --
+   lateral buds are placed along each new internode at a golden-angle
+   (137.5°) spiral with a configurable branching angle. Phototropic
+   straightening and gravitropic droop both scale with an axis's own
+   persistent vigor rather than a hardcoded "is this the trunk" check: a
+   still-dominant axis (whatever its order, or however it came to be
+   dominant) holds a strong vertical bias and droops little, while a
+   weaker one drifts and sags more. This continuous rule is what spreads
+   a canopy out sideways into a rounded silhouette instead of a narrow,
+   conifer-like column -- and nothing stops even a long-dominant "trunk"
+   from wobbling, since it's the same lerp-toward-vertical as everywhere
+   else, not a hard override.
+9. **Waning apical control** -- a leader's hormonal dominance erodes
+   gradually with age (`trunkAgingPenalty`), unlike an excurrent
+   conifer's permanent one, letting fresher branches eventually rival an
+   old axis's vigor and round out the crown top rather than tapering it
+   to a point indefinitely.
 
 All constants live in one place, `src/sim/params.ts`, documented with the
 literature/reasoning behind each.
@@ -145,9 +164,11 @@ knowledge) -- **not** internal mechanism details:
 `tests/shape.test.ts` covers overall *architecture* (deciduous- vs.
 conifer-like) across many seeds, since forking is stochastic:
 
-- at least some seeds develop more than one co-dominant trunk by the
-  juvenile stage, and at least some don't (a possibility, not a
-  guarantee), and a forked trunk is genuinely thick, not a twig;
+- looking at every branch point formed early in a tree's life (order-
+  agnostic -- "how thick did each side of this fork's lineage ultimately
+  grow", not "is this labeled order 0"): at least some seeds end up with
+  a genuinely thick, comparably-balanced early fork, and at least some
+  don't (a possibility, not a guarantee);
 - crown width holds up well into the upper crown on average instead of
   tapering linearly to a point like a conifer;
 - the live canopy's self-pruning is roughly continuous: crown base

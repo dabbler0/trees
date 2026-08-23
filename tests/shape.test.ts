@@ -10,7 +10,7 @@ import { runSimulation } from '../src/sim/simulate';
 import type { SimulationHistory, TreeState } from '../src/model/types';
 import { mean, segmentMidHeight } from './testUtils';
 
-const YOUNG_AGE = 30;
+const EARLY_FORK_CUTOFF_YEAR = 20;
 const MATURE_AGE = 90;
 const SEED_COUNT = 14;
 
@@ -21,10 +21,6 @@ beforeAll(() => {
   historiesBySeed = Array.from({ length: SEED_COUNT }, (_, i) => runSimulation({ ...defaultParams, seed: i + 1 }, MATURE_AGE));
 }, 60_000);
 
-function countLiveTrunkStems(state: TreeState): number {
-  return state.buds.filter((b) => b.order === 0 && b.status !== 'dead').length;
-}
-
 /** Radial distance from the vertical (Y) axis of a segment's midpoint. */
 function radialDistance(s: { start: readonly [number, number, number]; end: readonly [number, number, number] }): number {
   const mx = (s.start[0] + s.end[0]) / 2;
@@ -32,44 +28,57 @@ function radialDistance(s: { start: readonly [number, number, number]; end: read
   return Math.hypot(mx, mz);
 }
 
+/**
+ * Finds every branch point formed early in the tree's life (a segment
+ * created at or before `earlyYearCutoff` with 2+ children) and, for each,
+ * measures how comparably thick its children's lineages ultimately grew
+ * by `state`'s snapshot -- "how thick did this branch become" is the max
+ * radius anywhere in its own subtree, so a fork still counts even if the
+ * fork point itself has since been superseded by thicker growth further
+ * out. This is deliberately order-agnostic: forking is now a single rule
+ * applied identically at every branch point, at any order, so detecting
+ * it has to look at *what actually grew thick*, not at a privileged
+ * "order 0" label.
+ *
+ * Returns the ratio (second-thickest / thickest lineage) of the most
+ * balanced qualifying fork, or null if the tree has no early fork at all.
+ */
+function bestEarlyForkBalance(state: TreeState, earlyYearCutoff: number): { ratio: number; secondThickest: number } | null {
+  const ordered = [...state.segments].sort((a, b) => b.id - a.id); // children before parents
+  const subtreeMaxRadius = new Map<number, number>();
+  for (const s of ordered) {
+    let maxRadius = s.baseRadius;
+    for (const cid of s.childIds) maxRadius = Math.max(maxRadius, subtreeMaxRadius.get(cid) ?? 0);
+    subtreeMaxRadius.set(s.id, maxRadius);
+  }
+
+  let best: { ratio: number; secondThickest: number } | null = null;
+  for (const s of state.segments) {
+    if (s.createdYear > earlyYearCutoff || s.childIds.length < 2) continue;
+    const radii = s.childIds.map((cid) => subtreeMaxRadius.get(cid) ?? 0).sort((a, b) => b - a);
+    const ratio = radii[1] / radii[0];
+    if (best === null || ratio > best.ratio) best = { ratio, secondThickest: radii[1] };
+  }
+  return best;
+}
+
 describe('deciduous-like architecture: possible multi-trunk forking when young', () => {
   it('at least some seeds develop more than one co-dominant trunk by the juvenile stage, and at least some do not', () => {
-    const trunkCounts = historiesBySeed.map((h) => countLiveTrunkStems(h.states[YOUNG_AGE]));
-    expect(trunkCounts.some((c) => c > 1)).toBe(true);
-    expect(trunkCounts.some((c) => c === 1)).toBe(true);
+    const balances = historiesBySeed.map((h) => bestEarlyForkBalance(h.states[MATURE_AGE], EARLY_FORK_CUTOFF_YEAR));
+    expect(balances.some((b) => b !== null && b.ratio > 0.5)).toBe(true);
+    expect(balances.some((b) => b === null || b.ratio <= 0.5)).toBe(true);
   });
 
   it('a forked co-dominant trunk is genuinely thick, not a thin twig', () => {
-    // Find a seed that forked, and check the secondary trunk's radius
-    // near its base is a substantial fraction of the primary trunk's.
-    let checked = false;
-    for (const history of historiesBySeed) {
-      const state = history.states[MATURE_AGE];
-      const trunkTipSegmentIds = new Set(
-        state.buds.filter((b) => b.order === 0 && b.status !== 'dead').map((b) => b.segmentId)
-      );
-      if (trunkTipSegmentIds.size < 2) continue;
-
-      // Walk each trunk-class bud's lineage back toward the root via
-      // parentId, collecting order-0 segments, to find each stem's
-      // thickest (basal) segment.
-      const byId = new Map(state.segments.map((s) => [s.id, s]));
-      const basalRadiusByTip = [...trunkTipSegmentIds].map((tipId) => {
-        let cur = byId.get(tipId);
-        let basal = cur;
-        while (cur && cur.order === 0) {
-          basal = cur;
-          cur = cur.parentId !== null ? byId.get(cur.parentId) : undefined;
-        }
-        return basal!.baseRadius;
-      });
-      basalRadiusByTip.sort((a, b) => b - a);
-      const [thickest, secondThickest] = basalRadiusByTip;
-      expect(secondThickest).toBeGreaterThan(thickest * 0.3);
-      checked = true;
-      break;
-    }
-    expect(checked).toBe(true); // sanity: at least one forked example existed to check
+    const forked = historiesBySeed
+      .map((h) => bestEarlyForkBalance(h.states[MATURE_AGE], EARLY_FORK_CUTOFF_YEAR))
+      .filter((b): b is { ratio: number; secondThickest: number } => b !== null && b.ratio > 0.5);
+    expect(forked.length).toBeGreaterThan(0); // sanity: at least one forked example existed to check
+    // At least one qualifying fork should be a real limb, not a twig --
+    // some early "forks" are deep, thin twigs that happen to have a
+    // balanced ratio, which is fine (self-similarity at small scale),
+    // but the phenomenon needs to also show up at meaningful scale.
+    expect(Math.max(...forked.map((b) => b.secondThickest))).toBeGreaterThan(0.012);
   });
 });
 

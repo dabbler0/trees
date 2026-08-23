@@ -168,47 +168,50 @@ export interface SimulationParams {
   budBreakProbability: number;
   /**
    * Fraction of a bud's hormonal vigor retained by the axis when it
-   * continues apically, for the main leader (order 0). Real apical
-   * control gets *stronger*, not weaker, as a tree matures and its
-   * leader becomes more established relative to older side branches, so
-   * lateral (order > 0) axes decay faster per year the longer/deeper
-   * they are, via lateralAgingPenalty below -- this is what keeps thin,
-   * actively-extending growth concentrated toward the current top of the
-   * tree instead of old low branches indefinitely re-sprouting just as
-   * much new growth as the leader.
+   * continues apically. Real apical control gets *stronger*, not
+   * weaker, as an axis matures relative to newer competing branches, so
+   * deeper (higher-order) axes decay faster per year via
+   * lateralAgingPenalty below -- this is what keeps thin,
+   * actively-extending growth concentrated toward the current
+   * frontier(s) of the tree instead of old branches indefinitely
+   * re-sprouting just as much new growth as a fresher one. This applies
+   * identically to every axis: there is no separate "trunk" rule --
+   * whichever axis happens to keep the most vigor over time reads as
+   * the trunk, as an emergent outcome rather than a hardcoded label.
    */
   apicalVigorRetention: number;
-  /** Extra per-year hormonal decay applied to a continuing lateral axis, scaled by its branch order. */
+  /** Extra per-year hormonal decay applied to a continuing axis, scaled by its branch order (depth from the seed). */
   lateralAgingPenalty: number;
   /**
-   * Extra per-year hormonal decay applied to *every* continuing axis
-   * regardless of order, including the trunk. Real "decurrent" broadleaf
-   * trees gradually lose central apical control as they mature (unlike
-   * an "excurrent" conifer, which keeps a dominant leader for life):
-   * this is what lets freshly-formed upper lateral branches eventually
-   * rival an old, long-decaying leader's vigor, rounding out the crown
-   * top instead of it staying a sharp cone indefinitely.
+   * Extra per-year hormonal decay applied to every continuing axis
+   * regardless of order. Real "decurrent" broadleaf trees gradually
+   * lose central apical control as they mature (unlike an "excurrent"
+   * conifer, which keeps a dominant leader for life): this is what lets
+   * freshly-formed upper branches eventually rival an old, long-decaying
+   * one's vigor, rounding out the crown top instead of it staying a
+   * sharp cone indefinitely.
    */
   trunkAgingPenalty: number;
-  /** Fraction of a parent bud's hormonal vigor a new lateral bud inherits (apical dominance). */
+  /** Fraction of a parent bud's hormonal vigor an ordinary (non-co-dominant) new lateral bud inherits. */
   lateralVigorRatio: number;
-
-  // --- Co-dominant trunk forking (multi-stem architecture) ---
   /**
-   * Probability that a lateral bud breaking off the *current* trunk axis
-   * becomes a co-dominant fork (promoted to order 0, i.e. trunk-class)
-   * instead of an ordinary order-1 lateral. Real broadleaf saplings
-   * frequently fork into two or three comparably thick low stems this
-   * way; conifers essentially never do. Applied independently at each
-   * qualifying bud-break event, so forking is possible, not guaranteed.
+   * Probability that a newly-breaking lateral bud is co-dominant with
+   * its parent instead of an ordinary, steeply-discounted subordinate --
+   * applied identically at *every* branch point in the tree, at any
+   * order or age, not just "the trunk". This is what lets a young tree
+   * fork into multiple comparably thick stems (as real broadleaf
+   * saplings often do) as one instance of a single, scale-invariant
+   * branching rule, rather than a special case reserved for a
+   * privileged central axis -- avoiding any hub-and-spoke bias in the
+   * resulting topology. A co-dominance event deep in an already-slender
+   * axis still inherits that axis's own already-diminished vigor, so it
+   * naturally reads as "a slightly thicker twig" rather than a visible
+   * new trunk -- visual significance is an emergent function of when
+   * the event happens, not of a hardcoded order check.
    */
-  trunkForkProbability: number;
-  /** Fraction of the parent trunk's hormonal vigor a co-dominant fork inherits (close to 1 = genuinely competitive). */
-  trunkForkVigorRatio: number;
-  /** Tree age (years) beyond which new trunk forks can no longer form -- forking is a juvenile-phase phenomenon. */
-  trunkForkMaxAge: number;
-  /** Maximum number of simultaneously live trunk-class (order 0) stems. */
-  maxCoDominantTrunks: number;
+  coDominanceProbability: number;
+  /** Fraction of the parent's hormonal vigor a co-dominant lateral inherits (close to lateralVigorRatio's ceiling = genuinely competitive). */
+  coDominantVigorRatio: number;
 
   // --- Gravitropism / phototropism (shape) ---
   /** How strongly lateral branches droop under their own weight (0 = rigid). */

@@ -34,11 +34,8 @@ export const defaultParams: SimulationParams = {
   lateralAgingPenalty: 0.0022,
   trunkAgingPenalty: 0.0009,
   lateralVigorRatio: 0.56,
-
-  trunkForkProbability: 0.035,
-  trunkForkVigorRatio: 0.82,
-  trunkForkMaxAge: 18,
-  maxCoDominantTrunks: 3,
+  coDominanceProbability: 0.025,
+  coDominantVigorRatio: 0.85,
 
   gravitropicDroop: 0.16,
   phototropicPull: 0.045,

@@ -20,32 +20,37 @@ const MIN_TWIG_RADIUS = 0.0025; // 2.5mm floor, roughly a current-year twig
  *     the branch graph.
  *
  *  2. Mechanical self-support: a free-standing column/cantilever needs
- *     disproportionately more radius as the load overhead (its own height
- *     and the crown it carries) grows, well past what photosynthetic
- *     pipe-model demand alone would require (real trunks keep thickening
- *     long after their lower limbs have died and stopped producing
- *     leaves). We approximate this with a Greenhill-style d ~ h^1.5 floor
- *     on the trunk axis.
+ *     disproportionately more radius as the load overhead above it
+ *     grows, well past what photosynthetic pipe-model demand alone would
+ *     require (real supporting limbs keep thickening long after their
+ *     own lower sub-branches have died and stopped producing leaves). We
+ *     approximate this with a Greenhill-style d ~ h^1.5 floor, scaled by
+ *     how much height *this segment's own subtree* actually reaches
+ *     above it -- not a fixed "trunk" axis. Any segment that a lot of
+ *     the tree's height still depends on gets a strong floor, whether
+ *     it's the original leader or a co-dominant fork; a short-lived twig
+ *     near the top with little height depending on it doesn't, all from
+ *     the same formula.
  *
  * This function mutates baseRadius/tipRadius/hydraulicResistance in place
  * on the provided segments (which should already carry this year's
  * leafArea and the previous year's radii as a floor).
  */
-export function applyPipeModelAndMechanics(
-  segments: Map<number, BranchSegment>,
-  treeHeight: number,
-  params: SimulationParams
-): void {
+export function applyPipeModelAndMechanics(segments: Map<number, BranchSegment>, params: SimulationParams): void {
   const ordered = [...segments.values()].sort((a, b) => b.id - a.id); // children (higher id) before parents
 
   const subtreeAreaDemand = new Map<number, number>();
+  const subtreeMaxHeight = new Map<number, number>();
   for (const s of ordered) {
     const ownDemand = params.pipeModelRatio * s.leafArea;
     let childDemand = 0;
+    let maxHeight = s.end[1];
     for (const cid of s.childIds) {
       childDemand += subtreeAreaDemand.get(cid) ?? 0;
+      maxHeight = Math.max(maxHeight, subtreeMaxHeight.get(cid) ?? s.end[1]);
     }
     subtreeAreaDemand.set(s.id, ownDemand + childDemand);
+    subtreeMaxHeight.set(s.id, maxHeight);
   }
 
   for (const s of ordered) {
@@ -56,11 +61,8 @@ export function applyPipeModelAndMechanics(
     const pipeBaseRadius = Math.sqrt(total / Math.PI);
     const pipeTipRadius = s.childIds.length > 0 ? Math.sqrt(childDemand / Math.PI) : MIN_TWIG_RADIUS;
 
-    let mechanicalFloor = 0;
-    if (s.order === 0) {
-      const heightAboveBase = Math.max(0, treeHeight - s.start[1]);
-      mechanicalFloor = params.mechanicalThickeningFactor * Math.pow(heightAboveBase, 1.5);
-    }
+    const heightAboveBase = Math.max(0, (subtreeMaxHeight.get(s.id) ?? s.end[1]) - s.start[1]);
+    const mechanicalFloor = params.mechanicalThickeningFactor * Math.pow(heightAboveBase, 1.5);
 
     s.baseRadius = Math.max(s.baseRadius, pipeBaseRadius, mechanicalFloor, MIN_TWIG_RADIUS);
     s.tipRadius = Math.max(Math.min(s.tipRadius, s.baseRadius), pipeTipRadius, MIN_TWIG_RADIUS);
