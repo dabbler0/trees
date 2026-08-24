@@ -222,11 +222,20 @@ export const PARAM_CONTROLS: ParamControlDef[] = [
   linear(
     'mechanicalThickeningFactor',
     'Trunk taper / wind-firmness',
-    'Multiplier on the real-wood-physics mechanical-support floor (Greenhill buckling for the trunk, cantilever bending for lateral branches -- see pipeModel.ts): 1.0 is a real green-hardwood safety margin. Higher gives a stouter, more over-built trunk (open-grown/wind-exposed form); lower gives a slenderer, more marginally-built one (sheltered forest-grown, living closer to the structural edge).',
+    'Multiplier on the real-wood-physics mechanical-support floor (Greenhill buckling for the trunk, cantilever bending for lateral branches, and root anchorage against wind-overturning -- see pipeModel.ts): 1.0 is a real green-hardwood safety margin. Higher gives a stouter, more over-built tree, above and below ground (open-grown/wind-exposed form); lower gives a slenderer, more marginally-built one (sheltered forest-grown, living closer to the structural edge).',
     'species',
     0.3,
     3,
     0.1,
     (v) => v.toFixed(1)
+  ),
+  angleDeg(
+    'rootSpreadAngle',
+    'Root spread habit',
+    'Divergence of a main structural root from straight down. Low = a deep, narrow taproot habit (well-drained/arid soils, e.g. oak, hickory); high = a shallow, wide-spreading "root plate" habit (wet or compacted soils, e.g. spruce, many urban street trees).',
+    'species',
+    10,
+    80,
+    5
   ),
 ];

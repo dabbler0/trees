@@ -370,6 +370,75 @@ Each simulated year:
     shape mechanism here -- it just reads as "trunk" waviness because
     that's whichever axis grows thick and prominent for long enough to
     make its wobble history visible.
+12. **Root system** -- a below-ground counterpart to the canopy, sharing
+    the same segment/bud graph and growth machinery (`kind: 'shoot' |
+    'root'` on both types) rather than a separate model:
+    - A handful of main structural roots (`numMainRoots`) radiate out
+      from the collar at spawn time, fanned evenly in azimuth, diverging
+      from straight down by `rootSpreadAngle` -- the below-ground
+      counterpart of the seedling starting with one leader, except real
+      root systems typically develop several major roots from the start
+      rather than a single taproot.
+    - Root growth is a separate pass from shoot elongation (no light/
+      canopy involvement -- nothing underground to shade a root tip),
+      but competes for its own fixed share of the *same* whole-tree
+      carbon pool shoots draw from (`rootCarbonAllocationFraction`,
+      default 0.25 -- real trees typically invest ~20-30% of biomass
+      belowground, Poorter et al. 2012, "Biomass allocation to leaves,
+      stems and roots," *New Phytologist* 193), via the same
+      demand-weighted source-sink allocation math as shoots. This is a
+      deliberate simplification of the real dynamic (functional-
+      equilibrium) reallocation trees show between roots and shoots
+      under water/light stress (Brouwer's functional equilibrium
+      hypothesis) -- a fixed split rather than the fuller feedback.
+    - Direction is geotropic (pulled toward straight down,
+      `rootGeotropicPull`) rather than phototropic, calibrated gently
+      (matching shoots' own `phototropicPull` in scale) so a root
+      maintains a fairly consistent trajectory for a long time before
+      trending downward, rather than diving toward vertical within a
+      few years and truncating its own lateral spread -- an earlier,
+      much stronger value did exactly that, collapsing root spread to a
+      token stub regardless of how long the tree grew.
+    - Depth is self-limiting via the same saturating curve used for a
+      shoot's height-based hydraulic limitation (`heightVigorFactor`),
+      evaluated on depth instead of height (`rootDepthHalfDepth`) --
+      standing in for increasing soil compaction/oxygen limitation with
+      depth, the same way hydraulic limitation gives shoot height a real
+      asymptote.
+    - A root segment's `leafArea` field is repurposed as absorptive
+      fine-root surface area (`rootAbsorptiveAreaPerLength`) -- the
+      standard below-ground analogue of leaf area in whole-plant carbon/
+      water-economy models -- driving the same pipe-model demand
+      machinery as a shoot's leaf area, restricted to whichever segment
+      currently hosts a live root tip (real absorptive roots concentrate
+      at a root system's growing periphery, unlike a shoot's leaves,
+      which persist on their segment for `leafLifespanYears` regardless
+      of whether it has since branched further).
+    - Root thickness combines the same pipe-model floor as shoots (sap-
+      conducting cross-section is conserved through the root collar
+      exactly like any other branch point, not summed with the shoot
+      side on top of it -- see `computeOverturnRequirement`'s sibling
+      pipe-model comment in `pipeModel.ts`) with a new **anchorage**
+      floor: real wind-drag load on the crown (0.5 * air density * drag
+      coefficient * frontal area * wind speed^2, a design "strong gale"
+      wind speed) creates a real overturning moment about the collar,
+      which the root system's total cross-section and spread must
+      resist with a safety margin (the standard tree-risk-assessment
+      model, e.g. Peltola 2006, "Mechanical stability of trees under
+      static loads and dynamic wind loading," *American Journal of
+      Botany* 93) -- concentrated at the main roots right at the collar,
+      tapering outward via ordinary pipe-model demand beyond that, the
+      same way buckling's real force concentrates at a trunk's own base.
+      `mechanicalThickeningFactor` (the "Trunk taper / wind-firmness"
+      slider) scales this floor too, alongside the shoot buckling/
+      bending floors it already governed.
+    - No cap on root spread/depth relative to the crown, but root
+      *population* shares the same `maxActiveBuds` carrying-capacity cap
+      as shoots -- without it, root branching (which has nothing else
+      slowing it down the way shoots have light competition) can run
+      away into tens of thousands of segments within a few decades,
+      itself crushing the whole-tree carbon budget via the resulting
+      maintenance-respiration bill.
 
 All constants live in one place, `src/sim/params.ts`, documented with the
 literature/reasoning behind each.
@@ -387,11 +456,14 @@ would plausibly vary, rather than every internal tuning constant (see
   branching angle, droop/weeping habit, trunk waviness (conifer-straight
   vs. broadleaf-leaning), foliage retention (deciduous vs.
   evergreen-like), shade tolerance, canopy self-shading density, forking
-  tendency, foliage density per shoot, and trunk taper/wind-firmness (a
+  tendency, foliage density per shoot, trunk taper/wind-firmness (a
   multiplier on the real-wood-physics mechanical floor described above --
   1.0 is a real green-hardwood safety margin; higher gives a stouter,
   more over-built, open-grown/wind-exposed form, lower a slenderer one
-  living closer to the structural edge).
+  living closer to the structural edge), and root spread habit (how far
+  a main structural root diverges from straight down -- low for a deep,
+  narrow taproot habit; high for a shallow, wide-spreading "root plate"
+  habit).
 
 Sliders update a pending set of overrides shown live next to each label;
 click "Grow new tree" to actually re-run the simulation with them (same
@@ -471,6 +543,29 @@ conifer-like) across many seeds, since forking is stochastic:
   leader's lineage always staying dominant just because it started out
   ahead.
 
+`tests/roots.test.ts` covers the below-ground root system, in the same
+externally-observable-facts spirit:
+
+- the record stays a single, well-formed tree graph with roots attached
+  at the collar, at every age checked;
+- a real root system actually develops: nonzero spread, depth, and woody
+  volume by maturity;
+- root depth growth is self-limiting rather than unbounded -- still
+  growing early on, but with a much smaller increment late in life than
+  early, a real plateau rather than runaway growth;
+- root system size stays realistic relative to the rest of the tree:
+  woody volume is a real, non-negligible share of total woody volume
+  without dominating it (a wide, honestly-documented bound -- see the
+  file's own module doc for why this model's emergent root mass fraction
+  runs under the oft-cited real 20-30% figure), and root spread reaches a
+  real fraction of crown radius, not a token stub;
+- root anchorage against wind-overturning holds up: independently
+  re-measuring the root system's *actual* grown cross-section at the
+  collar against a real wind-drag-overturning-moment/root-soil-anchorage
+  calculation (see `computeAnchorageReport` in `src/sim/pipeModel.ts`),
+  not a replay of the growth-time formula -- the same non-tautological
+  spirit as `allometry.test.ts`'s shoot mechanical-stress check.
+
 ## Renderer
 
 `TreeDebugRenderer` draws one `TreeState` at a time via two
@@ -483,6 +578,15 @@ of thousands of segments stay within two draw calls. Options:
 - `colorMode` -- `natural`, `branchOrder`, `age`, `lightExposure`,
   `hydraulicStress`, `vigor` (bud vigor at growing tips), or `photo`.
   Adding a new debug signal is one entry in `src/render/colorSchemes.ts`.
+
+Root segments render through the exact same generic per-segment geometry
+code as branches (any `BranchSegment`, any direction, any `kind`) with no
+special-casing needed -- only two things were added for them: the ground
+disc is semi-transparent (`depthWrite: false`, so it doesn't itself
+occlude what's behind it) rather than opaque, so the below-ground root
+system is actually visible as a soil-tinted view rather than fully
+hidden; and `natural`/`photo` mode give root wood a darker, more uniform
+dun-brown than above-ground bark (`ROOT_COLOR` in `colorSchemes.ts`).
 
 **Photo mode** swaps the debug leaf spheres for textured, alpha-cutout
 leaf-shaped planes (a leaf silhouette drawn once to a canvas at load

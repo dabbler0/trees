@@ -197,8 +197,16 @@ export class TreeDebugRenderer {
 
     this.ground = new THREE.Mesh(
       new THREE.CircleGeometry(60, 48),
-      new THREE.MeshStandardMaterial({ color: '#6f8f5c', roughness: 1 })
+      // Semi-transparent, and depthWrite:false, so the below-ground root
+      // system actually renders through it (a literal opaque disc would
+      // otherwise fully occlude every root, and even a naively-transparent
+      // one would still write depth and z-fight/hide what's behind it) --
+      // reads as a soil tint over the roots rather than a true cutaway,
+      // which is enough to see the root system's shape without a much
+      // more involved clip-plane/cutaway renderer.
+      new THREE.MeshStandardMaterial({ color: '#6f8f5c', roughness: 1, transparent: true, opacity: 0.55, depthWrite: false })
     );
+    this.ground.renderOrder = 1; // draw after roots so its transparency blends over them, not the reverse
     this.ground.rotation.x = -Math.PI / 2;
     this.scene.add(this.ground);
     const grid = new THREE.GridHelper(60, 60, '#3f5a35', '#557a48');

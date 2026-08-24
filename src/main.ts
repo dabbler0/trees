@@ -129,6 +129,7 @@ function showAtIndex(index: number): void {
   metricsLine.textContent =
     `H=${m.height.toFixed(2)}m  DBH=${(m.dbh * 100).toFixed(1)}cm  ` +
     `crownBase=${m.crownBaseHeight.toFixed(2)}m  crownWidth=${m.crownWidth.toFixed(2)}m  ` +
+    `rootSpread=${m.rootSpread.toFixed(2)}m  rootDepth=${m.rootDepth.toFixed(2)}m  ` +
     `leafArea=${m.totalLeafArea.toFixed(1)}m²  segments=${state.segments.length}  buds=${state.buds.length}`;
 }
 
@@ -260,13 +261,13 @@ function formatHover(info: HoverInfo): string {
   if (info.kind === 'segment') {
     const s = info.segment;
     const lines = [
-      `Branch segment #${s.id}`,
+      `${s.kind === 'root' ? 'Root segment' : 'Branch segment'} #${s.id}`,
       `order: ${s.order}   alive: ${s.alive}`,
       `created year: ${s.createdYear}`,
       `start: ${formatVec3(s.start)}`,
       `end:   ${formatVec3(s.end)}`,
       `radius: ${(s.baseRadius * 1000).toFixed(1)}mm → ${(s.tipRadius * 1000).toFixed(1)}mm`,
-      `leaf area: ${s.leafArea.toFixed(3)} m²`,
+      s.kind === 'root' ? `absorptive area: ${s.leafArea.toFixed(3)} m²` : `leaf area: ${s.leafArea.toFixed(3)} m²`,
       `light exposure: ${(s.lightExposure * 100).toFixed(0)}%`,
       `hydraulic resistance: ${s.hydraulicResistance.toFixed(1)}`,
     ];

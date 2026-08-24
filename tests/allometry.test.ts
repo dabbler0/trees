@@ -185,7 +185,13 @@ describe('small, thin branches are concentrated toward the top rather than the b
 
   it('among lateral (non-trunk) branches, the upper third of the crown is on average thinner than the lower third', () => {
     const state = at(90);
-    const laterals = state.segments.filter((s) => s.order > 0);
+    // kind === 'shoot': a lateral *root* also has order > 0 (root order
+    // increments independently within the below-ground subgraph -- see
+    // BranchSegment.order), and sorts to the very bottom of this
+    // height-ordered list since root positions are negative, which would
+    // otherwise dilute "the lower third" with thin fine roots instead of
+    // the genuine low-crown shoot laterals this test means to compare.
+    const laterals = state.segments.filter((s) => s.kind === 'shoot' && s.order > 0);
     const withHeight = laterals
       .map((s) => ({ radius: segmentMeanRadius(s), height: segmentMidHeight(s) }))
       .sort((a, b) => a.height - b.height);

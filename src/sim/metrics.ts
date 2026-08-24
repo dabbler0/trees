@@ -55,7 +55,12 @@ function findTrunkChain(segments: readonly BranchSegment[]): BranchSegment[] {
   let current = byParent.get(null)?.[0];
   while (current) {
     chain.push(current);
-    const children = byParent.get(current.id) ?? [];
+    // kind === 'shoot' only: the root collar (segment 0) also parents the
+    // below-ground root system now, and a root segment forced thick by
+    // the anchorage mechanical floor (see pipeModel.ts) could otherwise
+    // out-rank a genuine shoot child here, sending this walk down into
+    // the ground instead of up into the canopy.
+    const children = (byParent.get(current.id) ?? []).filter((c) => c.kind === 'shoot');
     let best: BranchSegment | undefined;
     let bestRadius = -1;
     for (const c of children) {
@@ -100,16 +105,13 @@ export function computeMetrics(segments: readonly BranchSegment[]): TreeMetrics 
   let deadSegmentCount = 0;
   let woodyVolume = 0;
   let liveWoodyVolume = 0;
+  let rootSpread = 0;
+  let rootDepth = 0;
+  let rootWoodyVolume = 0;
 
   for (const s of segments) {
-    totalLeafArea += s.leafArea;
     if (s.alive) liveSegmentCount++;
     else deadSegmentCount++;
-
-    if (s.leafArea > 0) {
-      crownBaseHeight = Math.min(crownBaseHeight, s.start[1]);
-      crownRadius = Math.max(crownRadius, Math.hypot(s.end[0], s.end[2]));
-    }
 
     const len = distance(s.start, s.end);
     const r1 = s.baseRadius;
@@ -117,6 +119,25 @@ export function computeMetrics(segments: readonly BranchSegment[]): TreeMetrics 
     const volume = ((Math.PI * len) / 3) * (r1 * r1 + r1 * r2 + r2 * r2);
     woodyVolume += volume;
     if (s.alive) liveWoodyVolume += volume;
+
+    if (s.kind === 'root') {
+      // A root segment's leafArea is repurposed as absorptive fine-root
+      // area (see BranchSegment.leafArea) -- real, but not canopy
+      // foliage, so it must never feed totalLeafArea/crownBaseHeight/
+      // crownWidth, which are specifically above-ground canopy metrics.
+      if (s.alive) {
+        rootWoodyVolume += volume;
+        rootSpread = Math.max(rootSpread, Math.hypot(s.end[0], s.end[2]));
+        rootDepth = Math.max(rootDepth, -s.end[1]);
+      }
+      continue;
+    }
+
+    totalLeafArea += s.leafArea;
+    if (s.leafArea > 0) {
+      crownBaseHeight = Math.min(crownBaseHeight, s.start[1]);
+      crownRadius = Math.max(crownRadius, Math.hypot(s.end[0], s.end[2]));
+    }
   }
 
   if (totalLeafArea === 0) crownBaseHeight = height; // fully dormant/leafless tree
@@ -131,5 +152,8 @@ export function computeMetrics(segments: readonly BranchSegment[]): TreeMetrics 
     deadSegmentCount,
     woodyVolume,
     liveWoodyVolume,
+    rootSpread,
+    rootDepth,
+    rootWoodyVolume,
   };
 }

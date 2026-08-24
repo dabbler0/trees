@@ -22,6 +22,22 @@ export type Vec3 = readonly [number, number, number];
 export type BudType = 'apical' | 'axillary';
 
 /**
+ * Which half of the tree a segment/bud belongs to. 'shoot' is everything
+ * above the root collar (the original canopy model); 'root' is the new
+ * below-ground root system, grown by a separate (but carbon-budget-
+ * competing) process -- see growRoots in growth.ts. Segments/buds of both
+ * kinds share the exact same graph structure (a root segment's parentId
+ * can be the root-collar segment, id 0, exactly like a shoot segment's),
+ * which is what lets the existing renderer, serialization, and generic
+ * per-segment mechanics (radius, alive-flag propagation, etc.) work on
+ * roots with no changes -- but several *shoot-specific* traversals (DBH's
+ * trunk-chain walk, the crown/canopy metrics, light-driven senescence)
+ * must filter on this field rather than assuming every segment is part of
+ * the canopy.
+ */
+export type SegmentKind = 'shoot' | 'root';
+
+/**
  * - active: this bud may still produce a new growth unit (segment) in a
  *   future growing season.
  * - dormant: temporarily suppressed (e.g. by apical dominance / low vigor)
@@ -38,6 +54,9 @@ export interface Bud {
   /** The segment this bud sits at the growing tip of. */
   segmentId: number;
   type: BudType;
+  /** 'shoot' (the canopy, grown by stepYear) or 'root' (the below-ground
+   * root system, grown by growRoots) -- see SegmentKind. */
+  kind: SegmentKind;
   status: BudStatus;
   position: Vec3;
   /** Preferred growth heading if this bud elongates (unit vector). */
@@ -90,7 +109,13 @@ export interface BranchSegment {
   id: number;
   parentId: number | null;
   childIds: number[];
-  /** 0 = trunk. Increments by 1 at each branching (lateral) event. */
+  /** 'shoot' (canopy) or 'root' (below-ground) -- see SegmentKind. Both
+   * kinds coexist in one graph: a root segment's parentId can be the
+   * root-collar segment (id 0) exactly like a shoot segment's. */
+  kind: SegmentKind;
+  /** 0 = trunk (for a shoot) or a main structural root (for a root).
+   * Increments by 1 at each branching (lateral) event, independently
+   * within each kind. */
   order: number;
   start: Vec3;
   end: Vec3;
@@ -100,9 +125,15 @@ export interface BranchSegment {
   createdYear: number;
   /** False once senesced (self-pruned). Dead wood is kept for a while before abscission. */
   alive: boolean;
-  /** Current-year foliage carried directly on this segment, m^2. */
+  /** Current-year foliage carried directly on this segment, m^2 -- for a
+   * root-kind segment, this field instead holds absorptive fine-root
+   * surface area, the standard below-ground analogue of leaf area in
+   * whole-plant carbon/water-economy models (Brouwer's "functional
+   * equilibrium" framework): it drives the root pipe-model demand the
+   * same way leaf area drives a shoot's, but contributes nothing to
+   * photosynthesis, canopy shading, or the rendered leaf point cloud. */
   leafArea: number;
-  /** Debug: 0..1 canopy light exposure at this segment's tip. */
+  /** Debug: 0..1 canopy light exposure at this segment's tip (roots: unused, always 1). */
   lightExposure: number;
   /** Debug: cumulative hydraulic path resistance from the root to this segment's tip. */
   hydraulicResistance: number;
@@ -141,6 +172,15 @@ export interface TreeMetrics {
    * costing it the leaf area.
    */
   liveWoodyVolume: number;
+  /** Horizontal radius of the furthest-reaching live root, meters -- the
+   * below-ground analogue of crownWidth/2. */
+  rootSpread: number;
+  /** Depth (positive, meters) of the deepest live root below grade. */
+  rootDepth: number;
+  /** Sum of root-segment volumes (any kind === 'root' segment), m^3 --
+   * the below-ground counterpart to woodyVolume, which sums *all*
+   * segments (shoot + root) as total whole-tree woody biomass. */
+  rootWoodyVolume: number;
 }
 
 export interface TreeState {
@@ -394,6 +434,59 @@ export interface SimulationParams {
   respirationPerWoodyVolume: number;
   /** Carbon cost of producing one meter of new shoot (wood + leaves), same units as above. */
   carbonCostPerMeterGrowth: number;
+
+  // --- Root system (below-ground growth) ---
+  /**
+   * Target fraction of the whole tree's net annual carbon that goes to
+   * root growth rather than shoot growth, applied as a fixed split of
+   * the same shared carbon pool shoots draw from (see growRoots in
+   * growth.ts). Real trees show plastic, demand-driven reallocation
+   * between roots and shoots (Brouwer's "functional equilibrium"
+   * hypothesis: a water/nutrient-stressed tree shifts more carbon to
+   * roots, a light-stressed one shifts more to shoots) -- this model
+   * uses a fixed target ratio rather than that full dynamic feedback, a
+   * deliberate simplification. The target itself is a real, commonly
+   * cited figure: root mass fraction in trees typically runs ~20-30% of
+   * total biomass (Poorter et al. 2012, "Biomass allocation to leaves,
+   * stems and roots," *New Phytologist* 193).
+   */
+  rootCarbonAllocationFraction: number;
+  /** Number of main structural roots radiating out from the root collar,
+   * fanned evenly in azimuth -- the below-ground analogue of the seedling
+   * starting with one leader, except real root systems typically develop
+   * several major structural roots from the start rather than one taproot. */
+  numMainRoots: number;
+  /** Divergence angle (radians) of a main structural root from straight
+   * down. 0 = a single deep taproot; larger = a shallower, wider-spreading
+   * "root plate" habit (real root architecture varies from deep taproots
+   * in well-drained/arid soils to shallow plates in wet or compacted
+   * ones). */
+  rootSpreadAngle: number;
+  /**
+   * How strongly a root's growth direction re-orients toward straight
+   * down each year -- the root system's geotropism, directly analogous
+   * to phototropicPull for shoots (which re-orients toward vertical/
+   * light) except pulling the opposite way.
+   */
+  rootGeotropicPull: number;
+  /**
+   * Depth (m, positive) at which the root depth-limitation vigor factor
+   * is reduced to 50%, using the exact same saturating curve as
+   * heightVigorHalfHeight (see heightVigorFactor in growth.ts) evaluated
+   * on depth instead of height. Standing in for increasing soil
+   * compaction, oxygen limitation, and (eventually) a water table --
+   * real fine-root biomass concentrates heavily in the upper ~1m of soil
+   * for most temperate trees, with structural roots occasionally
+   * reaching further; this is what gives root depth a real asymptote
+   * instead of unbounded growth.
+   */
+  rootDepthHalfDepth: number;
+  /** Absorptive (fine-root) surface area a live root tip's own segment
+   * carries per meter of its own length, m^2/m -- the root-system
+   * analogue of leafAreaPerShootLength, driving root pipe-model demand
+   * the same way leaf area drives a shoot's (see the field doc on
+   * BranchSegment.leafArea). */
+  rootAbsorptiveAreaPerLength: number;
 }
 
 export interface SimulationHistory {

@@ -28,6 +28,10 @@ export interface ColorMode {
 const WOOD_COLOR = new THREE.Color('#7a5230');
 const YOUNG_WOOD_COLOR = new THREE.Color('#9c7a4a');
 const DEAD_WOOD_COLOR = new THREE.Color('#5a5450');
+/** Roots read as a darker, more uniform dun-brown than above-ground bark
+ * -- real roots lack the lighter, more textured/current-growth-tinted
+ * bark of a young shoot, since they're never freshly-lit or photosynthetic. */
+const ROOT_COLOR = new THREE.Color('#4a3624');
 
 /** Blue (low) -> yellow -> red (high) heatmap for a value in [0, 1]. */
 function heatmap(t: number): THREE.Color {
@@ -41,9 +45,10 @@ export const COLOR_MODES: ColorMode[] = [
   {
     id: 'natural',
     label: 'Natural',
-    description: 'Bark-brown wood, brighter for current growth; gray for dead/senesced wood.',
+    description: 'Bark-brown wood, brighter for current growth; gray for dead/senesced wood; darker dun-brown for roots.',
     color: ({ segment, currentYear }) => {
       if (!segment.alive) return DEAD_WOOD_COLOR.clone();
+      if (segment.kind === 'root') return ROOT_COLOR.clone();
       const age = currentYear - segment.createdYear;
       return age <= 1 ? YOUNG_WOOD_COLOR.clone() : WOOD_COLOR.clone();
     },
@@ -93,6 +98,7 @@ export const COLOR_MODES: ColorMode[] = [
     // per-segment color function, which only ever governs branch color.
     color: ({ segment, currentYear }) => {
       if (!segment.alive) return DEAD_WOOD_COLOR.clone();
+      if (segment.kind === 'root') return ROOT_COLOR.clone();
       const age = currentYear - segment.createdYear;
       return age <= 1 ? YOUNG_WOOD_COLOR.clone() : WOOD_COLOR.clone();
     },

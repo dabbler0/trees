@@ -63,6 +63,41 @@ const GREENHILL_C = 0.79;
 const GREENHILL_RADIUS_COEFFICIENT =
   (Math.pow(STRUCTURAL_SAFETY_FACTOR / GREENHILL_C, 1.5) * Math.sqrt((GREEN_WOOD_DENSITY * GRAVITY) / GREEN_WOOD_MOE)) / 2;
 
+/**
+ * Root anchorage against wind-overturning: a real, if necessarily
+ * simplified, mechanical check distinct from buckling/bending, both of
+ * which are about a piece of wood bending/crushing under load, not about
+ * the whole tree tipping over. Standard tree-risk-assessment models
+ * (e.g. Peltola 2006, "Mechanical stability of trees under static loads
+ * and dynamic wind loading," *American Journal of Botany* 93) compute a
+ * wind-drag overturning moment on the crown and compare it to the root
+ * system's critical turning-resistance moment. This implementation:
+ *  - Wind force via the standard drag equation, F = 0.5 * rho_air * Cd *
+ *    A_frontal * v^2, using real air density (1.225 kg/m^3, ISA sea
+ *    level) and a representative *reconfigured* (streamlined-in-wind)
+ *    foliage drag coefficient -- real broadleaf crowns reduce their own
+ *    drag substantially by reconfiguring/curling in strong wind (Vogel
+ *    1989, "Drag and reconfiguration of broad leaves in high winds,"
+ *    *Journal of Experimental Botany* 40), well below a flat plate's
+ *    ~1.2, hence the lower figure here.
+ *  - A representative "ordinary storm" design wind speed rather than a
+ *    rare extreme event: 20 m/s is a strong gale (Beaufort force 9).
+ *  - Root-soil anchorage resistance approximated as (total root
+ *    cross-section at the collar) * (root system spread, the resisting
+ *    lever arm) * (a root-soil grip stress). Real root-plate anchorage
+ *    capacity is highly soil- and root-architecture-dependent (Coutts
+ *    1983's classic root-plate model; Peltola et al.'s ForestGALES
+ *    critical-turning-moment framework) -- unlike the wood constants
+ *    above, which come from one consistent, precisely tabulated
+ *    engineering reference, SOIL_GRIP_STRESS is a single illustrative,
+ *    order-of-magnitude figure standing in for that real variability,
+ *    not a specific measured constant.
+ */
+const AIR_DENSITY = 1.225; // kg/m^3, ISA sea-level
+const CROWN_DRAG_COEFFICIENT = 0.4;
+const DESIGN_WIND_SPEED = 20; // m/s, ~ Beaufort force 9 "strong gale"
+const SOIL_GRIP_STRESS = 5.0e4; // Pa, illustrative root-soil anchorage figure
+
 interface SubtreeLoads {
   mass: Map<number, number>; // kg
   momentX: Map<number, number>; // kg*m (mass-weighted sum of x position)
@@ -101,7 +136,16 @@ function computeSubtreeLoads(segments: readonly BranchSegment[]): SubtreeLoads {
     let mz = ownMass * midZ;
     let h = s.end[1];
     for (const cid of s.childIds) {
-      if (!byId.has(cid)) continue;
+      const child = byId.get(cid);
+      // A root child's mass is soil-supported, not hanging off this
+      // point -- only relevant at the shared root-collar segment (id 0),
+      // which parents both the shoot system and the root system. Folding
+      // root mass into the collar's own cantilever/buckling load here
+      // would double-count weight the ground already carries directly,
+      // as if the trunk needed extra wood to hold its own roots up.
+      // (Root segments' own required thickness comes from a separate
+      // anchorage calculation below, not from subtree mass at all.)
+      if (!child || child.kind === 'root') continue;
       m += mass.get(cid) ?? 0;
       mx += momentX.get(cid) ?? 0;
       mz += momentZ.get(cid) ?? 0;
@@ -179,6 +223,86 @@ export function computeMechanicalStressReport(segments: readonly BranchSegment[]
   return report;
 }
 
+/**
+ * The whole-tree wind-overturning requirement (see the constants' own
+ * comment above): a real crown-geometry-driven overturning moment, and
+ * the total root cross-section at the collar a real root-soil anchorage
+ * model says is needed to resist it with a safety margin. Pulled out as
+ * its own pure function of segment geometry (no `params` dependency --
+ * mechanicalThickeningFactor is applied by each call site) so
+ * applyPipeModelAndMechanics and computeAnchorageReport share the exact
+ * same requirement calculation.
+ */
+function computeOverturnRequirement(segments: readonly BranchSegment[]): { requiredTotalRootCrossSection: number; rootSpread: number } {
+  let crownRadius = 0;
+  let crownTop = 0;
+  let crownBaseHeight = Infinity;
+  let rootSpread = 0;
+  for (const s of segments) {
+    if (s.kind === 'root') {
+      rootSpread = Math.max(rootSpread, Math.hypot(s.end[0], s.end[2]));
+      continue;
+    }
+    if (s.leafArea <= 0) continue;
+    crownRadius = Math.max(crownRadius, Math.hypot(s.end[0], s.end[2]));
+    crownTop = Math.max(crownTop, s.end[1], s.start[1]);
+    crownBaseHeight = Math.min(crownBaseHeight, s.start[1]);
+  }
+  const canopyDepth = Number.isFinite(crownBaseHeight) ? Math.max(0.5, crownTop - crownBaseHeight) : 0;
+  const frontalArea = crownRadius * 2 * canopyDepth * 0.5;
+  const leverArmHeight = Number.isFinite(crownBaseHeight) ? Math.max(0, (crownBaseHeight + crownTop) / 2) : 0;
+  const windForce = 0.5 * AIR_DENSITY * CROWN_DRAG_COEFFICIENT * frontalArea * DESIGN_WIND_SPEED * DESIGN_WIND_SPEED;
+  const overturnMoment = windForce * leverArmHeight;
+  // A floor on the resisting lever arm, not just a >0 guard: a real root
+  // system's resistance doesn't come *only* from the horizontal reach of
+  // its longest root, and dividing by the tree's *actual* current spread
+  // directly is a real numerical hazard here in a way it isn't for
+  // buckling/bending -- a young tree's roots start every simulation at
+  // literally zero spread (right at the collar) and grow outward
+  // gradually, same as the crown does, but crown geometry only ever
+  // *multiplies* into the moment (a small young crown -> a small real
+  // wind load, self-consistently), while an undefended spread here sits
+  // in the *denominator*: a tiny spread would demand an enormous
+  // cross-section to compensate for its short lever arm, which would
+  // then cost an enormous respiration bill, starving the very elongation
+  // that would otherwise grow the spread out of the danger zone --
+  // a runaway feedback loop with no natural exit once triggered. Real
+  // young trees are never actually in this position (a sapling's crown
+  // is proportionately just as small as its root spread, so the real
+  // wind load it must resist is tiny too); the floor keeps this model's
+  // simplified fixed-formula version from manufacturing a crisis a real
+  // tree never actually faces.
+  const MIN_ANCHORAGE_LEVER_ARM = 0.3; // m
+  const effectiveRootSpread = Math.max(rootSpread, MIN_ANCHORAGE_LEVER_ARM);
+  const requiredTotalRootCrossSection = (overturnMoment * STRUCTURAL_SAFETY_FACTOR) / (effectiveRootSpread * SOIL_GRIP_STRESS);
+  return { requiredTotalRootCrossSection, rootSpread };
+}
+
+export interface AnchorageReport {
+  /** Total cross-sectional area (m^2) a real wind-overturning-resistance
+   * model says the root system needs at the collar, with a structural
+   * safety margin already applied. */
+  requiredRootCrossSectionM2: number;
+  /** The root system's *actual* combined cross-sectional area (m^2) at
+   * the collar, from each main root's actually-grown radius -- an
+   * independent measurement, not a replay of the growth-time formula
+   * (see computeMechanicalStressReport's own comment for why that
+   * distinction matters for a real test). */
+  actualRootCrossSectionM2: number;
+}
+
+/** Non-tautological anchorage check for tests/roots.test.ts: independently
+ * re-measures the root system's actual grown cross-section at the collar
+ * against the real wind-overturning requirement. */
+export function computeAnchorageReport(segments: readonly BranchSegment[]): AnchorageReport {
+  const { requiredTotalRootCrossSection } = computeOverturnRequirement(segments);
+  let actualRootCrossSectionM2 = 0;
+  for (const s of segments) {
+    if (s.kind === 'root' && s.parentId === 0) actualRootCrossSectionM2 += Math.PI * s.baseRadius * s.baseRadius;
+  }
+  return { requiredRootCrossSectionM2: requiredTotalRootCrossSection, actualRootCrossSectionM2 };
+}
+
 export const MECHANICAL_CONSTANTS = {
   GREEN_WOOD_DENSITY,
   GREEN_WOOD_MOE,
@@ -187,6 +311,10 @@ export const MECHANICAL_CONSTANTS = {
   STRUCTURAL_SAFETY_FACTOR,
   ALLOWABLE_BENDING_STRESS,
   GREENHILL_C,
+  AIR_DENSITY,
+  CROWN_DRAG_COEFFICIENT,
+  DESIGN_WIND_SPEED,
+  SOIL_GRIP_STRESS,
 };
 
 /**
@@ -236,6 +364,7 @@ export const MECHANICAL_CONSTANTS = {
  */
 export function applyPipeModelAndMechanics(segments: Map<number, BranchSegment>, params: SimulationParams): void {
   const ordered = [...segments.values()].sort((a, b) => b.id - a.id); // children (higher id) before parents
+  const segmentById = segments;
 
   // Mass/lever-arm loads are computed from each segment's *incoming*
   // (last year's, pre-thickening) radius: this year's growth can only add
@@ -246,18 +375,52 @@ export function applyPipeModelAndMechanics(segments: Map<number, BranchSegment>,
   // shape.
   const loads = computeSubtreeLoads(ordered);
 
+  // Root anchorage against wind-overturning (see computeOverturnRequirement
+  // and the constants' own comment above): a whole-tree property, computed
+  // once per year rather than per segment, then applied below as an extra
+  // floor specifically on the main roots at the collar (parentId === 0)
+  // -- where a real root system's cross-section is thickest for
+  // structural reasons, tapering outward via ordinary pipe-model demand
+  // beyond that, exactly like how buckling's real force concentrates at
+  // a column's own base.
+  const { requiredTotalRootCrossSection } = computeOverturnRequirement(ordered);
+  const collarRootSegments = ordered.filter((s) => s.kind === 'root' && s.parentId === 0);
+  const anchorageRadius =
+    collarRootSegments.length > 0
+      ? params.mechanicalThickeningFactor * Math.sqrt(requiredTotalRootCrossSection / collarRootSegments.length / Math.PI)
+      : 0;
+
+  // Sap-conducting cross-section is conserved through a branching point
+  // (parent ~= sum of children) whether the branching is above ground
+  // (a shoot splitting into laterals) or, at the shared root-collar
+  // segment (id 0), below ground (the trunk's own base vs. its main
+  // roots) -- but conserved, not summed on top of each other: the
+  // collar's own demand must come *only* from its shoot subtree, the
+  // same total that would apply if it had no roots at all, not shoot
+  // demand plus root demand added together (which would double-count the
+  // same continuous pipe network as if going up and going down each
+  // needed their own separate supply). The `child.kind === s.kind` guard
+  // is what keeps that separation: it only actually excludes anything at
+  // the collar, since every other segment's children all share its own
+  // kind already.
   const subtreeAreaDemand = new Map<number, number>();
   for (const s of ordered) {
     const ownDemand = params.pipeModelRatio * s.leafArea;
     let childDemand = 0;
-    for (const cid of s.childIds) childDemand += subtreeAreaDemand.get(cid) ?? 0;
+    for (const cid of s.childIds) {
+      const child = segmentById.get(cid);
+      if (child && child.kind === s.kind) childDemand += subtreeAreaDemand.get(cid) ?? 0;
+    }
     subtreeAreaDemand.set(s.id, ownDemand + childDemand);
   }
 
   for (const s of ordered) {
     const total = subtreeAreaDemand.get(s.id) ?? 0;
     let childDemand = 0;
-    for (const cid of s.childIds) childDemand += subtreeAreaDemand.get(cid) ?? 0;
+    for (const cid of s.childIds) {
+      const child = segmentById.get(cid);
+      if (child && child.kind === s.kind) childDemand += subtreeAreaDemand.get(cid) ?? 0;
+    }
 
     const pipeBaseRadius = Math.sqrt(total / Math.PI);
     const pipeTipRadius = s.childIds.length > 0 ? Math.sqrt(childDemand / Math.PI) : MIN_TWIG_RADIUS;
@@ -269,7 +432,11 @@ export function applyPipeModelAndMechanics(segments: Map<number, BranchSegment>,
     const bendingRadius = moment > 0 ? Math.pow((4 * moment) / (Math.PI * ALLOWABLE_BENDING_STRESS), 1 / 3) : 0;
     const bending = params.mechanicalThickeningFactor * bendingRadius;
 
-    s.baseRadius = Math.max(s.baseRadius, pipeBaseRadius, buckling, bending, MIN_TWIG_RADIUS);
+    // Wind-overturning anchorage only actually constrains anything for a
+    // main root right at the collar -- see anchorageRadius above.
+    const anchorage = s.kind === 'root' && s.parentId === 0 ? anchorageRadius : 0;
+
+    s.baseRadius = Math.max(s.baseRadius, pipeBaseRadius, buckling, bending, anchorage, MIN_TWIG_RADIUS);
 
     // The buckling/bending mechanical floors above are evaluated at this
     // segment's *base* -- but real trunk taper is continuous, not a

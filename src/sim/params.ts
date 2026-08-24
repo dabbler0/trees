@@ -62,6 +62,13 @@ export const defaultParams: SimulationParams = {
 
   respirationPerWoodyVolume: 25,
   carbonCostPerMeterGrowth: 0.04,
+
+  rootCarbonAllocationFraction: 0.25,
+  numMainRoots: 5,
+  rootSpreadAngle: (55 * Math.PI) / 180,
+  rootGeotropicPull: 0.05,
+  rootDepthHalfDepth: 1.2,
+  rootAbsorptiveAreaPerLength: 0.8,
 };
 
 export function cloneParams(p: SimulationParams): SimulationParams {

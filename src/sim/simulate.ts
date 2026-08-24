@@ -13,7 +13,7 @@ import { decodeStates, encodeStates } from './historyCodec';
  */
 export function runSimulation(params: SimulationParams, years: number, species = 'generic broadleaf'): SimulationHistory {
   const rng = makeRng(params.seed);
-  const { state: initial, ctx } = createInitialState();
+  const { state: initial, ctx } = createInitialState(params);
   const states: TreeState[] = [initial];
   let current = initial;
   for (let y = 0; y < years; y++) {
@@ -32,7 +32,7 @@ export class SimulationRunner {
   public history: SimulationHistory;
 
   constructor(params: SimulationParams, species = 'generic broadleaf') {
-    const { state, ctx } = createInitialState();
+    const { state, ctx } = createInitialState(params);
     this.ctx = ctx;
     this.rng = makeRng(params.seed);
     this.history = { formatVersion: 1, species, params, states: [state] };

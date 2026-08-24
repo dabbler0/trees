@@ -43,6 +43,7 @@ function vecEqual(a: readonly number[], b: readonly number[]): boolean {
 function segmentUnchanged(a: BranchSegment, b: WireSegment): boolean {
   return (
     a.parentId === b.parentId &&
+    a.kind === b.kind &&
     a.order === b.order &&
     a.alive === b.alive &&
     a.createdYear === b.createdYear &&

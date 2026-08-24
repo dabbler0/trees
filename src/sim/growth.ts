@@ -93,11 +93,12 @@ export interface GrowthContext {
   smoothedCarbonSupply: number;
 }
 
-export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
-  const rootSegment: BranchSegment = {
+export function createInitialState(params: SimulationParams): { state: TreeState; ctx: GrowthContext } {
+  const collarSegment: BranchSegment = {
     id: 0,
     parentId: null,
     childIds: [],
+    kind: 'shoot',
     order: 0,
     start: [0, 0, 0],
     end: [0, GROUND_HEIGHT, 0],
@@ -113,6 +114,7 @@ export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
     id: 0,
     segmentId: 0,
     type: 'apical',
+    kind: 'shoot',
     status: 'active',
     position: [0, GROUND_HEIGHT, 0],
     direction: [0, 1, 0],
@@ -125,17 +127,48 @@ export function createInitialState(): { state: TreeState; ctx: GrowthContext } {
     shadeYears: 0,
     stalledYears: 0,
   };
-  const segmentMap = new Map([[rootSegment.id, rootSegment]]);
+
+  // A handful of main structural roots radiate out from the collar,
+  // evenly fanned in azimuth, each diverging from straight down by
+  // rootSpreadAngle -- the below-ground counterpart of the seedling
+  // starting with one leader, except real root systems typically
+  // develop several major structural roots from the outset rather than
+  // a single taproot.
+  let nextBudId = 1;
+  const rootBuds: Bud[] = [];
+  for (let i = 0; i < params.numMainRoots; i++) {
+    const azimuth = (i / params.numMainRoots) * Math.PI * 2;
+    const direction = lateralDirection([0, -1, 0], params.rootSpreadAngle, azimuth);
+    rootBuds.push({
+      id: nextBudId++,
+      segmentId: 0,
+      type: 'apical',
+      kind: 'root',
+      status: 'active',
+      position: [0, GROUND_HEIGHT, 0],
+      direction,
+      order: 0,
+      hormonalVigor: 1,
+      vigor: 1,
+      auxinLevel: 1,
+      lightExposure: 1,
+      ageYears: 0,
+      shadeYears: 0,
+      stalledYears: 0,
+    });
+  }
+
+  const segmentMap = new Map([[collarSegment.id, collarSegment]]);
   computeHydraulicResistances(segmentMap); // keep this consistent with every later year's segments, rather than a hand-set placeholder
   const segments = [...segmentMap.values()];
   const state: TreeState = {
     year: 0,
     segments,
-    buds: [seedBud],
+    buds: [seedBud, ...rootBuds],
     leaves: [],
     metrics: computeMetrics(segments),
   };
-  return { state, ctx: { nextSegmentId: 1, nextBudId: 1, smoothedCarbonSupply: 0 } };
+  return { state, ctx: { nextSegmentId: 1, nextBudId, smoothedCarbonSupply: 0 } };
 }
 
 const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
@@ -280,6 +313,182 @@ function applyDroop(dir: Vec3, hormonalVigor: number, params: SimulationParams):
 }
 
 /**
+ * Grows the below-ground root system by one year: a simpler, separate
+ * pass from the shoot elongation loop in stepYear, since roots have no
+ * light/canopy involvement (nothing underground to shade a root tip) --
+ * but they compete for their own fixed share of the same whole-tree
+ * carbon pool shoots draw from (netCarbonForRoots), via the exact same
+ * demand-weighted source-sink allocation math. Mutates `segments` in
+ * place, sharing stepYear's id counters. Root-specific mechanics:
+ *  - Direction is geotropic (pulled toward straight down, rootGeotropicPull)
+ *    rather than phototropic, with no heliotropism or waviness term --
+ *    real roots do wander around obstacles, but this model doesn't
+ *    represent soil obstacles, so that's skipped to keep the root
+ *    system's own parameter surface small.
+ *  - Vigor is limited by depth via the same saturating curve used for a
+ *    shoot's height-based hydraulic limitation (heightVigorFactor),
+ *    evaluated on depth instead of height (rootDepthHalfDepth) -- standing
+ *    in for increasing soil compaction/oxygen limitation with depth,
+ *    which is what gives root depth a real asymptote.
+ *  - No light-based or trunk-occlusion senescence (neither applies
+ *    underground); a bud that's carbon-stalled for too long still
+ *    senesces via the same ramped stall-death used for shoots, with the
+ *    same "exempt the currently most-vigorous few roots" rule that
+ *    fixed the equivalent shoot extinction bug -- for the same reason:
+ *    without it, a long-lived tree's main structural roots would
+ *    eventually senesce on the same finite clock as any fine root once
+ *    their own hormonalVigor decayed enough, and nothing would ever
+ *    replenish the root population once root growth broadly stalled.
+ */
+function growRoots(
+  prevRootBuds: readonly Bud[],
+  netCarbonForRoots: number,
+  potentialElongation: number,
+  minGrowthLength: number,
+  params: SimulationParams,
+  rng: () => number,
+  ctx: GrowthContext,
+  year: number,
+  segments: Map<number, BranchSegment>
+): Bud[] {
+  const buds: Bud[] = prevRootBuds.map((b) => ({ ...b }));
+  const nonDeadRootBuds = buds.filter((b) => b.status !== 'dead');
+
+  // Same relative, rank-based "is this (one of) the root system's
+  // currently-dominant axes" exemption as the shoot population's
+  // dominantVigorCutoff -- see its comment in stepYear for why an
+  // absolute hormonalVigor threshold doesn't work for this.
+  const DOMINANT_ROOT_VIGOR_COUNT = 3;
+  const rootHormonalVigors = nonDeadRootBuds.map((b) => b.hormonalVigor).sort((a, b) => a - b);
+  const dominantRootVigorCutoff = rootHormonalVigors[Math.max(0, rootHormonalVigors.length - DOMINANT_ROOT_VIGOR_COUNT)];
+
+  interface RootCandidate {
+    bud: Bud;
+    demand: number;
+    dir: Vec3;
+  }
+  const candidates: RootCandidate[] = [];
+
+  for (const bud of buds) {
+    if (bud.status === 'dead') continue;
+    const depth = Math.max(0, -bud.position[1]);
+    const depthFactor = heightVigorFactor(depth, params.rootDepthHalfDepth);
+    const demand = Math.max(0, Math.min(1, bud.hormonalVigor * depthFactor));
+    bud.ageYears += 1;
+    bud.status = 'active';
+
+    const pull = params.rootGeotropicPull * clamp01(bud.hormonalVigor);
+    const dir = normalize(lerp(bud.direction, [0, -1, 0], pull));
+    candidates.push({ bud, demand, dir });
+  }
+
+  const totalDemand = candidates.reduce((sum, c) => sum + c.demand, 0);
+  const totalRequestedCarbon = totalDemand * potentialElongation * params.carbonCostPerMeterGrowth;
+  const globalScale = totalRequestedCarbon > 0 ? Math.min(1, netCarbonForRoots / totalRequestedCarbon) : 0;
+
+  const newBuds: Bud[] = [];
+  // Roots share the same total-population carrying capacity as shoots
+  // (maxActiveBuds) -- without *some* cap, root branching has nothing
+  // else slowing it down the way shoots have light competition/self-
+  // thinning, and can run away into tens of thousands of segments in a
+  // handful of years, itself crushing the whole-tree carbon budget via
+  // the resulting maintenance-respiration bill.
+  let liveRootBudCount = nonDeadRootBuds.length;
+
+  for (const { bud, demand, dir } of candidates) {
+    const vigor = Math.max(0, Math.min(1, demand * globalScale));
+    bud.vigor = vigor;
+
+    const length = potentialElongation * vigor;
+    if (length < minGrowthLength) {
+      bud.stalledYears += 1;
+      if (bud.hormonalVigor < dominantRootVigorCutoff) {
+        const toleratedStallYears = params.spurSenescenceYears / Math.max(0.02, 1 - bud.hormonalVigor);
+        const yearsPastTolerance = bud.stalledYears - toleratedStallYears;
+        if (rng() < rampedDeathProbability(yearsPastTolerance, 1, 0.4)) {
+          bud.status = 'dead';
+        }
+      }
+      continue;
+    }
+    bud.stalledYears = 0;
+
+    const parentSegment = segments.get(bud.segmentId)!;
+    const start = bud.position;
+    const end = add(start, scale(dir, length));
+
+    if (segments.size >= MAX_SEGMENTS) continue; // shared safety valve with the shoot system
+
+    const newSegment: BranchSegment = {
+      id: ctx.nextSegmentId++,
+      parentId: parentSegment.id,
+      childIds: [],
+      kind: 'root',
+      order: bud.order,
+      start,
+      end,
+      baseRadius: MIN_TWIG_RADIUS,
+      tipRadius: MIN_TWIG_RADIUS,
+      createdYear: year,
+      alive: true,
+      leafArea: 0,
+      lightExposure: 1,
+      hydraulicResistance: 0,
+    };
+    segments.set(newSegment.id, newSegment);
+    parentSegment.childIds.push(newSegment.id);
+
+    const parentHormonalVigor = bud.hormonalVigor;
+
+    // Lateral root branching: the same golden-angle-esque idea as shoots,
+    // simplified -- no light/exposure term (nothing underground to shade
+    // it) and no co-dominance distinction (a real root system doesn't
+    // show the same "which axis becomes the trunk" competition a canopy
+    // does; every main root already gets an equal share at spawn time in
+    // createInitialState).
+    for (let i = 0; i < params.nodesPerInternode; i++) {
+      if (segments.size >= MAX_SEGMENTS) break;
+      if (liveRootBudCount >= params.maxActiveBuds) break;
+      const frac = (i + 1) / (params.nodesPerInternode + 1);
+      const nodePos = lerp(start, end, frac);
+      const breakChance = params.budBreakProbability * 0.6 * vigor;
+      if (rng() > breakChance) continue;
+
+      const azimuth = params.phyllotacticAngle * (ctx.nextBudId + i) + (rng() - 0.5) * 0.3;
+      const lateralDir = lateralDirection(dir, params.rootSpreadAngle, azimuth);
+      const lateralHormonalVigor = parentHormonalVigor * params.lateralVigorRatio * (0.85 + 0.3 * rng());
+
+      liveRootBudCount++;
+      newBuds.push({
+        id: ctx.nextBudId++,
+        segmentId: newSegment.id,
+        type: 'axillary',
+        kind: 'root',
+        status: 'active',
+        position: nodePos,
+        direction: lateralDir,
+        order: bud.order + 1,
+        hormonalVigor: lateralHormonalVigor,
+        vigor: 0,
+        auxinLevel: parentHormonalVigor,
+        lightExposure: 1,
+        ageYears: 0,
+        shadeYears: 0,
+        stalledYears: 0,
+      });
+    }
+
+    bud.segmentId = newSegment.id;
+    bud.position = end;
+    bud.direction = dir;
+    const retention = Math.max(0.85, params.apicalVigorRetention - params.lateralAgingPenalty * bud.order);
+    bud.hormonalVigor = parentHormonalVigor * retention;
+  }
+
+  return [...buds, ...newBuds];
+}
+
+/**
  * Advance the tree by exactly one growing season (one year). Pure function
  * of (previous state, params, rng, id context) -> next state; the engine
  * has no notion of a renderer or wall-clock time.
@@ -347,7 +556,11 @@ export function stepYear(
   // there, compounding into a firmer height ceiling.
   let effectiveSunlitLeafArea = 0;
   for (const s of prev.segments) {
-    if (s.leafArea <= 0) continue;
+    // Root segments repurpose leafArea to mean absorptive fine-root
+    // surface area (see the field doc on BranchSegment.leafArea) -- real
+    // absorptive tissue, but it doesn't photosynthesize, so it must never
+    // contribute to the carbon-supply side of the budget.
+    if (s.kind !== 'shoot' || s.leafArea <= 0) continue;
     const mid: Vec3 = [(s.start[0] + s.end[0]) / 2, (s.start[1] + s.end[1]) / 2, (s.start[2] + s.end[2]) / 2];
     const heightEfficiency = heightEfficiencyFactor(mid[1], params.heightVigorHalfHeight);
     effectiveSunlitLeafArea += s.leafArea * lightProfile.exposureAt(mid) * heightEfficiency;
@@ -371,8 +584,14 @@ export function stepYear(
   // zero and lock the whole tree into a single, permanently frozen
   // snapshot rather than continuing to slowly fill out for decades.
   const netCarbon = Math.max(carbonSupply * 0.015, carbonSupply - maintenanceCost);
+  // Fixed split of the one shared carbon pool between roots and shoots --
+  // see the field doc on rootCarbonAllocationFraction for why this is a
+  // fixed target rather than the fuller demand-driven reallocation real
+  // trees show.
+  const netCarbonForRoots = netCarbon * params.rootCarbonAllocationFraction;
+  const netCarbonForShoots = netCarbon - netCarbonForRoots;
 
-  const buds: Bud[] = prev.buds.map((b) => ({ ...b }));
+  const buds: Bud[] = prev.buds.filter((b) => b.kind === 'shoot').map((b) => ({ ...b }));
   const growthCapped = segments.size >= MAX_SEGMENTS;
 
   // Pass 1: update hormonal/hydraulic/light state, resolve senescence,
@@ -523,7 +742,7 @@ export function stepYear(
 
   const totalDemand = candidates.reduce((sum, c) => sum + c.demand, 0);
   const totalRequestedCarbon = totalDemand * potentialElongation * params.carbonCostPerMeterGrowth;
-  const globalScale = totalRequestedCarbon > 0 ? Math.min(1, netCarbon / totalRequestedCarbon) : 0;
+  const globalScale = totalRequestedCarbon > 0 ? Math.min(1, netCarbonForShoots / totalRequestedCarbon) : 0;
 
   const newBuds: Bud[] = [];
   let liveBudCount = buds.filter((b) => b.status !== 'dead').length;
@@ -619,6 +838,7 @@ export function stepYear(
       id: ctx.nextSegmentId++,
       parentId: parentSegment.id,
       childIds: [],
+      kind: 'shoot',
       order: bud.order,
       start,
       end,
@@ -687,6 +907,7 @@ export function stepYear(
         id: ctx.nextBudId++,
         segmentId: newSegment.id,
         type: 'axillary',
+        kind: 'shoot',
         status: 'active',
         position: nodePos,
         direction: lateralDir,
@@ -713,7 +934,15 @@ export function stepYear(
     bud.hormonalVigor = parentHormonalVigor * retention;
   }
 
-  const allBuds = [...buds, ...newBuds];
+  // Root growth: a separate, simpler pass (no light/canopy involvement --
+  // nothing underground to shade a root tip) that competes for its own
+  // fixed share of the same whole-tree carbon pool shoots draw from (see
+  // netCarbonForRoots above). Mutates `segments` in place exactly like
+  // the shoot loop above, sharing the same id counters.
+  const prevRootBuds = prev.buds.filter((b) => b.kind === 'root');
+  const rootBuds = growRoots(prevRootBuds, netCarbonForRoots, potentialElongation, minGrowthLength, params, rng, ctx, year, segments);
+
+  const allBuds = [...buds, ...newBuds, ...rootBuds];
 
   // Foliage: a segment bears leaves for leafLifespanYears after it forms
   // *from elongation*. But a living terminal bud that isn't elongating
@@ -724,12 +953,26 @@ export function stepYear(
   // dips below the growth-stall floor loses all foliage within
   // leafLifespanYears, which zeroes its carbon income forever and it can
   // never recover: an unrealistic, self-inflicted death spiral.
+  //
+  // Root segments repurpose this same field for absorptive fine-root
+  // area (see BranchSegment.leafArea) using a simpler rule: only a
+  // currently-childless segment hosting a live root tip carries any --
+  // real fine/absorptive roots concentrate at the growing periphery of a
+  // root system, while older, further-in roots become purely structural
+  // and lose absorptive function, unlike a shoot's leaves (which persist
+  // on their segment for leafLifespanYears regardless of whether that
+  // segment has since branched further).
   const liveBudSegmentIds = new Set(allBuds.filter((b) => b.status !== 'dead').map((b) => b.segmentId));
   const SPUR_LEAF_AREA = params.leafAreaPerShootLength * 0.12;
   for (const s of segments.values()) {
+    const hasLiveTip = s.childIds.length === 0 && liveBudSegmentIds.has(s.id);
+    if (s.kind === 'root') {
+      s.leafArea = hasLiveTip ? params.rootAbsorptiveAreaPerLength * Math.max(0.01, distance(s.start, s.end)) : 0;
+      continue;
+    }
     const inLeaf = year - s.createdYear < params.leafLifespanYears;
     const ageBasedArea = inLeaf ? params.leafAreaPerShootLength * Math.max(0.01, distance(s.start, s.end)) : 0;
-    const spurArea = s.childIds.length === 0 && liveBudSegmentIds.has(s.id) ? SPUR_LEAF_AREA : 0;
+    const spurArea = hasLiveTip ? SPUR_LEAF_AREA : 0;
     s.leafArea = Math.max(ageBasedArea, spurArea);
   }
 
