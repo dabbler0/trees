@@ -420,15 +420,29 @@ Each simulated year:
       side on top of it -- see `computeOverturnRequirement`'s sibling
       pipe-model comment in `pipeModel.ts`) with a new **anchorage**
       floor: real wind-drag load on the crown (0.5 * air density * drag
-      coefficient * frontal area * wind speed^2, a design "strong gale"
-      wind speed) creates a real overturning moment about the collar,
-      which the root system's total cross-section and spread must
-      resist with a safety margin (the standard tree-risk-assessment
-      model, e.g. Peltola 2006, "Mechanical stability of trees under
-      static loads and dynamic wind loading," *American Journal of
-      Botany* 93) -- concentrated at the main roots right at the collar,
-      tapering outward via ordinary pipe-model demand beyond that, the
-      same way buckling's real force concentrates at a trunk's own base.
+      coefficient * frontal area * wind speed^2, a recurring "strong
+      breeze" design wind speed -- an ordinary load a tree must survive
+      repeatedly, not a rare severe-storm event) creates a real
+      overturning moment about the collar, which the root system's total
+      cross-section and spread must resist with a safety margin (the
+      standard tree-risk-assessment model, e.g. Peltola 2006, "Mechanical
+      stability of trees under static loads and dynamic wind loading,"
+      *American Journal of Botany* 93). Concentrated on the main roots'
+      own direct lineage (`order === 0`, not any lateral branching off
+      them, however close to the collar) and tapered smoothly to zero
+      over a real, if modest, distance (`ANCHORAGE_TAPER_LENGTH`) rather
+      than jumping straight back to ordinary demand one internode out --
+      the same tip-continuity principle as the shoot buckling/bending
+      floors, extended to a floor that hadn't originally gotten it: an
+      anchorage-sized root's very first internode could otherwise go from
+      tens of centimeters at its base to ordinary twig thickness within
+      a few centimeters. Restricting the taper to the main lineages
+      specifically (not "any root segment, by raw distance from the
+      collar") matters just as much: an earlier version keyed it on
+      distance alone, so *every* fine lateral branching off close to the
+      trunk inherited nearly the full requirement too -- with potentially
+      thousands of such laterals within the taper distance, this
+      inflated total root volume past 90% of the whole tree's wood.
       `mechanicalThickeningFactor` (the "Trunk taper / wind-firmness"
       slider) scales this floor too, alongside the shoot buckling/
       bending floors it already governed.
@@ -553,6 +567,15 @@ externally-observable-facts spirit:
 - root depth growth is self-limiting rather than unbounded -- still
   growing early on, but with a much smaller increment late in life than
   early, a real plateau rather than runaway growth;
+- root segments never render as leaves (their `leafArea` field means
+  absorptive area for a root, not real foliage -- see the renderer
+  section below);
+- root thickness tapers realistically rather than jumping: no root
+  segment's own base/tip radii differ by more than a small factor, no
+  segment's base radius exceeds its parent's tip radius by more than a
+  small factor (taper never reverses moving away from the collar), and
+  collar roots are substantially thicker on average than distal fine
+  roots -- a real, continuous taper end to end;
 - root system size stays realistic relative to the rest of the tree:
   woody volume is a real, non-negligible share of total woody volume
   without dominating it (a wide, honestly-documented bound -- see the
@@ -587,6 +610,12 @@ occlude what's behind it) rather than opaque, so the below-ground root
 system is actually visible as a soil-tinted view rather than fully
 hidden; and `natural`/`photo` mode give root wood a darker, more uniform
 dun-brown than above-ground bark (`ROOT_COLOR` in `colorSchemes.ts`).
+`placeLeaves` (`src/sim/leaves.ts`), which turns a segment's `leafArea`
+into a rendered point cloud, is guarded to `kind === 'shoot'` only -- an
+earlier version checked `leafArea > 0` alone, so a root segment's
+repurposed absorptive area (real, but not actual foliage -- see
+`BranchSegment.leafArea`'s own doc) was indistinguishable from real
+canopy leaves and rendered as leaf points underground.
 
 **Photo mode** swaps the debug leaf spheres for textured, alpha-cutout
 leaf-shaped planes (a leaf silhouette drawn once to a canvas at load

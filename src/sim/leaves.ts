@@ -23,7 +23,10 @@ const MAX_LEAVES_PER_SEGMENT = 1000;
 export function placeLeaves(segments: readonly BranchSegment[], year: number): Leaf[] {
   const leaves: Leaf[] = [];
   for (const s of segments) {
-    if (s.leafArea <= 0 || !s.alive) continue;
+    // Root segments repurpose leafArea to mean absorptive fine-root
+    // surface area (see BranchSegment.leafArea) -- real, but not actual
+    // foliage, so it must never turn into rendered leaf points.
+    if (s.kind !== 'shoot' || s.leafArea <= 0 || !s.alive) continue;
     const count = Math.min(MAX_LEAVES_PER_SEGMENT, Math.max(1, Math.round(s.leafArea / AVG_LEAF_AREA)));
     const localRng = makeRng((s.id * 2654435761) >>> 0);
     for (let i = 0; i < count; i++) {

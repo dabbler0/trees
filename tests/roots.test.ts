@@ -39,6 +39,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { defaultParams } from '../src/sim/params';
 import { runSimulation } from '../src/sim/simulate';
 import { computeAnchorageReport } from '../src/sim/pipeModel';
+import { placeLeaves } from '../src/sim/leaves';
 import type { SimulationHistory, TreeState } from '../src/model/types';
 import { assertIsValidTree } from './testUtils';
 
@@ -78,6 +79,18 @@ describe('root system develops alongside the shoot system', () => {
     const lateIncrement = depths[3] - depths[2];
     expect(lateIncrement).toBeLessThan(earlyIncrement);
   });
+
+  it('root segments never render as leaves (their leafArea is repurposed as below-ground absorptive area)', () => {
+    // placeLeaves used to check leafArea alone, with no kind guard -- so
+    // a root segment's nonzero absorptive area (the same field, repurposed
+    // per BranchSegment.leafArea's own doc) was indistinguishable from
+    // real canopy foliage and rendered as leaf points underground.
+    const state = at(OLD_GROWTH_AGE);
+    const rootSegmentIds = new Set(state.segments.filter((s) => s.kind === 'root').map((s) => s.id));
+    expect(rootSegmentIds.size).toBeGreaterThan(0); // sanity: there are root segments to potentially mis-render
+    const leaves = placeLeaves(state.segments, state.year);
+    expect(leaves.some((l) => rootSegmentIds.has(l.segmentId))).toBe(false);
+  });
 });
 
 describe('root system size is realistic relative to the rest of the tree', () => {
@@ -107,6 +120,53 @@ describe('root system size is realistic relative to the rest of the tree', () =>
     const crownRadius = m.crownWidth / 2;
     expect(crownRadius).toBeGreaterThan(0); // sanity: there's a real crown to compare against
     expect(m.rootSpread).toBeGreaterThan(crownRadius * 0.5);
+  });
+});
+
+describe('root thickness tapers realistically rather than jumping', () => {
+  // A real root's radius decreases gradually moving away from the trunk
+  // (thickest at the collar, tapering out to fine absorptive roots), the
+  // below-ground mirror of a shoot's own taper. This was previously
+  // broken by exactly the kind of thick-base/vanishing-tip discontinuity
+  // the tip-continuity fix in pipeModel.ts exists to prevent for
+  // buckling/bending: the wind-overturning anchorage floor was applied
+  // only at each collar root segment's own *base*, with nothing bridging
+  // it to the ordinary (much smaller) demand governing everywhere else,
+  // so a root could measure tens of centimeters at its very base and
+  // ordinary twig thickness within the same, often centimeters-long,
+  // first internode -- an anchorageRadiusAt(distanceFromCollar) taper
+  // over a real characteristic distance (ANCHORAGE_TAPER_LENGTH) fixes
+  // this the same way the buckling/bending tip floors already did.
+  it('no root segment jumps by more than a small factor between its own base and tip', () => {
+    for (const year of [40, 70, 90, OLD_GROWTH_AGE]) {
+      const rootSegments = at(year).segments.filter((s) => s.kind === 'root');
+      for (const s of rootSegments) {
+        if (s.tipRadius <= 0) continue;
+        expect(s.baseRadius / s.tipRadius).toBeLessThan(2);
+      }
+    }
+  });
+
+  it("a root segment's base radius never exceeds its parent's tip radius by more than a small factor (taper never reverses moving away from the collar)", () => {
+    const state = at(OLD_GROWTH_AGE);
+    const byId = new Map(state.segments.map((s) => [s.id, s]));
+    for (const s of state.segments) {
+      if (s.kind !== 'root' || s.parentId === null) continue;
+      const parent = byId.get(s.parentId);
+      if (!parent || parent.tipRadius <= 0) continue;
+      expect(s.baseRadius / parent.tipRadius).toBeLessThan(1.5);
+    }
+  });
+
+  it('the root system genuinely tapers overall: collar roots are substantially thicker than distal fine roots', () => {
+    const state = at(OLD_GROWTH_AGE);
+    const collarRoots = state.segments.filter((s) => s.kind === 'root' && s.parentId === 0);
+    const twigRoots = state.segments.filter((s) => s.kind === 'root' && s.childIds.length === 0);
+    expect(collarRoots.length).toBeGreaterThan(0);
+    expect(twigRoots.length).toBeGreaterThan(0);
+    const meanCollarRadius = collarRoots.reduce((sum, s) => sum + s.baseRadius, 0) / collarRoots.length;
+    const meanTwigRadius = twigRoots.reduce((sum, s) => sum + s.tipRadius, 0) / twigRoots.length;
+    expect(meanCollarRadius).toBeGreaterThan(meanTwigRadius * 2);
   });
 });
 

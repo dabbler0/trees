@@ -95,8 +95,10 @@ const GREENHILL_RADIUS_COEFFICIENT =
  */
 const AIR_DENSITY = 1.225; // kg/m^3, ISA sea-level
 const CROWN_DRAG_COEFFICIENT = 0.4;
-const DESIGN_WIND_SPEED = 20; // m/s, ~ Beaufort force 9 "strong gale"
-const SOIL_GRIP_STRESS = 5.0e4; // Pa, illustrative root-soil anchorage figure
+const DESIGN_WIND_SPEED = 12; // m/s, ~ Beaufort force 6 "strong breeze" -- an ordinary
+// recurring design load, rather than a rare severe-storm event a tree isn't
+// expected to survive fully undamaged every single year of its life
+const SOIL_GRIP_STRESS = 5.0e5; // Pa, illustrative root-soil anchorage figure (a firm/compacted soil)
 
 interface SubtreeLoads {
   mass: Map<number, number>; // kg
@@ -248,7 +250,17 @@ function computeOverturnRequirement(segments: readonly BranchSegment[]): { requi
     crownTop = Math.max(crownTop, s.end[1], s.start[1]);
     crownBaseHeight = Math.min(crownBaseHeight, s.start[1]);
   }
-  const canopyDepth = Number.isFinite(crownBaseHeight) ? Math.max(0.5, crownTop - crownBaseHeight) : 0;
+  // No artificial minimum here (unlike the lever-arm floor below): a
+  // young tree's real canopy depth genuinely is small, giving a small
+  // real frontal area and a small real wind load -- self-consistent, not
+  // a hazard the way dividing by rootSpread is. An earlier version
+  // floored this at 0.5m regardless of actual crown size, manufacturing
+  // a nontrivial wind-load requirement even for a bare seedling with a
+  // literal point of canopy, whose resulting mechanical floor -- being
+  // permanent, since radius never shrinks -- persisted as a large,
+  // unjustified head start on total root volume for the rest of the
+  // tree's life.
+  const canopyDepth = Number.isFinite(crownBaseHeight) ? Math.max(0, crownTop - crownBaseHeight) : 0;
   const frontalArea = crownRadius * 2 * canopyDepth * 0.5;
   const leverArmHeight = Number.isFinite(crownBaseHeight) ? Math.max(0, (crownBaseHeight + crownTop) / 2) : 0;
   const windForce = 0.5 * AIR_DENSITY * CROWN_DRAG_COEFFICIENT * frontalArea * DESIGN_WIND_SPEED * DESIGN_WIND_SPEED;
@@ -378,17 +390,58 @@ export function applyPipeModelAndMechanics(segments: Map<number, BranchSegment>,
   // Root anchorage against wind-overturning (see computeOverturnRequirement
   // and the constants' own comment above): a whole-tree property, computed
   // once per year rather than per segment, then applied below as an extra
-  // floor specifically on the main roots at the collar (parentId === 0)
-  // -- where a real root system's cross-section is thickest for
-  // structural reasons, tapering outward via ordinary pipe-model demand
-  // beyond that, exactly like how buckling's real force concentrates at
-  // a column's own base.
+  // floor along each *main* root's own direct lineage (order === 0 --
+  // main roots keep order 0 for their own continuing axis exactly like a
+  // shoot leader does, with order only ever incrementing on a lateral
+  // branch), tapered smoothly to zero over ANCHORAGE_TAPER_LENGTH out
+  // from the collar, rather than applied only at each main root's very
+  // *base* and left completely unconstrained one internode further out.
+  // That "only at the base" version is exactly the same thick-base/
+  // vanishing-tip discontinuity the tip-continuity fix above exists to
+  // prevent for buckling/bending, just for a floor that hadn't been
+  // given the same treatment: an anchorage-sized main root could go from
+  // tens of centimeters at its very base to ordinary twig thickness
+  // within a single, often just centimeters-long, first internode -- and
+  // every subsequent segment along that same lineage reverts fully to
+  // whatever ordinary pipe-model/bending demand alone would give it, with
+  // nothing bridging the two. Root real anchorage *does* taper away from
+  // the trunk over a real, if modest, distance (real "root plate"
+  // structural thickening), not within a single internode's length
+  // regardless of how short that happens to be.
+  //
+  // Restricted to order === 0 specifically (not just "any root segment,
+  // by its raw distance from the collar"): a real root plate's structural
+  // thickening belongs to the handful of *main* roots themselves, not to
+  // every fine lateral that happens to branch off one of them close to
+  // the trunk. An earlier version keyed the taper on distance alone, so
+  // a lateral branching off just centimeters from the collar inherited
+  // almost the *full* anchorage requirement too, even though it wasn't
+  // one of the tree's actual load-bearing main roots -- with potentially
+  // thousands of such laterals within ANCHORAGE_TAPER_LENGTH of the
+  // collar, this inflated total root volume far beyond anything real
+  // (observed: over 95% of the whole tree's wood, when a real root
+  // system commonly runs a small fraction of total biomass).
+  const ANCHORAGE_TAPER_LENGTH = 1.5; // meters, an illustrative root-plate tapering distance
   const { requiredTotalRootCrossSection } = computeOverturnRequirement(ordered);
   const collarRootSegments = ordered.filter((s) => s.kind === 'root' && s.parentId === 0);
-  const anchorageRadius =
+  const anchorageRadiusAtCollar =
     collarRootSegments.length > 0
       ? params.mechanicalThickeningFactor * Math.sqrt(requiredTotalRootCrossSection / collarRootSegments.length / Math.PI)
       : 0;
+  // Cumulative path distance from the collar to each root segment's own
+  // base and tip, walked parent-before-child (ascending id) so a
+  // segment's own distance is always available before its children need
+  // it.
+  const rootDistanceFromCollarAtBase = new Map<number, number>();
+  const rootDistanceFromCollarAtTip = new Map<number, number>();
+  const rootsAscending = [...ordered].filter((s) => s.kind === 'root').sort((a, b) => a.id - b.id);
+  for (const s of rootsAscending) {
+    const baseDistance = s.parentId !== null ? (rootDistanceFromCollarAtTip.get(s.parentId) ?? 0) : 0;
+    rootDistanceFromCollarAtBase.set(s.id, baseDistance);
+    rootDistanceFromCollarAtTip.set(s.id, baseDistance + distance(s.start, s.end));
+  }
+  const anchorageRadiusAt = (distanceFromCollar: number): number =>
+    anchorageRadiusAtCollar * Math.max(0, 1 - distanceFromCollar / ANCHORAGE_TAPER_LENGTH);
 
   // Sap-conducting cross-section is conserved through a branching point
   // (parent ~= sum of children) whether the branching is above ground
@@ -432,11 +485,12 @@ export function applyPipeModelAndMechanics(segments: Map<number, BranchSegment>,
     const bendingRadius = moment > 0 ? Math.pow((4 * moment) / (Math.PI * ALLOWABLE_BENDING_STRESS), 1 / 3) : 0;
     const bending = params.mechanicalThickeningFactor * bendingRadius;
 
-    // Wind-overturning anchorage only actually constrains anything for a
-    // main root right at the collar -- see anchorageRadius above.
-    const anchorage = s.kind === 'root' && s.parentId === 0 ? anchorageRadius : 0;
+    // Wind-overturning anchorage, tapered smoothly from its full value at
+    // the collar (distance 0) to nothing by ANCHORAGE_TAPER_LENGTH out --
+    // see the comment above anchorageRadiusAt.
+    const anchorageBase = s.kind === 'root' && s.order === 0 ? anchorageRadiusAt(rootDistanceFromCollarAtBase.get(s.id) ?? 0) : 0;
 
-    s.baseRadius = Math.max(s.baseRadius, pipeBaseRadius, buckling, bending, anchorage, MIN_TWIG_RADIUS);
+    s.baseRadius = Math.max(s.baseRadius, pipeBaseRadius, buckling, bending, anchorageBase, MIN_TWIG_RADIUS);
 
     // The buckling/bending mechanical floors above are evaluated at this
     // segment's *base* -- but real trunk taper is continuous, not a
@@ -466,7 +520,9 @@ export function applyPipeModelAndMechanics(segments: Map<number, BranchSegment>,
     const bendingTipRadius = momentTip > 0 ? Math.pow((4 * momentTip) / (Math.PI * ALLOWABLE_BENDING_STRESS), 1 / 3) : 0;
     const bendingTip = params.mechanicalThickeningFactor * bendingTipRadius;
 
-    s.tipRadius = Math.max(Math.min(s.tipRadius, s.baseRadius), pipeTipRadius, bucklingTip, bendingTip, MIN_TWIG_RADIUS);
+    const anchorageTip = s.kind === 'root' && s.order === 0 ? anchorageRadiusAt(rootDistanceFromCollarAtTip.get(s.id) ?? 0) : 0;
+
+    s.tipRadius = Math.max(Math.min(s.tipRadius, s.baseRadius), pipeTipRadius, bucklingTip, bendingTip, anchorageTip, MIN_TWIG_RADIUS);
     if (s.tipRadius > s.baseRadius) s.baseRadius = s.tipRadius;
   }
 
