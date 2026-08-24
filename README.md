@@ -487,6 +487,18 @@ chosen parameters travel with a downloaded history file (they're just
 part of `SimulationHistory.params`), so a saved/shared tree remembers
 what grew it.
 
+"Save preset (.json)" downloads just the current parameter set (every
+`SimulationParams` field, including the seed field above -- not only the
+ones exposed as sliders) as a small standalone JSON file, independent of
+growing a tree with them first -- useful for saving/sharing a "species
+definition" on its own rather than a full (much larger) grown-tree
+history. "Load preset (.json)" reads one back: it applies every field in
+the file as an override and syncs the seed field and all slider positions
+to match, the same as if they'd been dialed in by hand; click "Grow new
+tree" afterward to actually grow with them. See `serializeParamsPreset`/
+`deserializeParamsPreset` in `src/sim/params.ts` for the (versioned, like
+`SimulationHistory`) file format.
+
 ## What the test suite checks
 
 `tests/allometry.test.ts` runs one simulation (deterministic, fixed seed)

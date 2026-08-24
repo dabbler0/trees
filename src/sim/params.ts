@@ -74,3 +74,33 @@ export const defaultParams: SimulationParams = {
 export function cloneParams(p: SimulationParams): SimulationParams {
   return { ...p };
 }
+
+/** Wire format for a downloadable "preset" -- just the species/environment
+ * parameter set (including seed) a user has dialed in, independent of any
+ * grown tree/history. Versioned the same way SimulationHistory is, so a
+ * future param shape change can still recognize and reject old files
+ * cleanly instead of silently mis-applying them. */
+export interface ParamsPreset {
+  formatVersion: 1;
+  kind: 'tree-params-preset';
+  params: SimulationParams;
+}
+
+export function serializeParamsPreset(params: SimulationParams): string {
+  const preset: ParamsPreset = { formatVersion: 1, kind: 'tree-params-preset', params };
+  return JSON.stringify(preset, null, 2);
+}
+
+export function deserializeParamsPreset(json: string): SimulationParams {
+  const parsed = JSON.parse(json) as Partial<ParamsPreset>;
+  if (parsed.kind !== 'tree-params-preset') {
+    throw new Error('Not a tree parameter preset file.');
+  }
+  if (parsed.formatVersion !== 1) {
+    throw new Error(`Unsupported preset format version: ${parsed.formatVersion}`);
+  }
+  if (!parsed.params || typeof parsed.params !== 'object') {
+    throw new Error('Preset file is missing its params.');
+  }
+  return { ...defaultParams, ...parsed.params };
+}

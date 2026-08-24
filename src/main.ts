@@ -1,6 +1,7 @@
 import type { SimulationHistory, SimulationParams } from './model/types';
 import { defaultParams } from './sim/params';
 import { deserializeHistory, runSimulation, serializeHistory } from './sim/simulate';
+import { deserializeParamsPreset, serializeParamsPreset } from './sim/params';
 import { sunDirection } from './sim/sun';
 import { TreeDebugRenderer, COLOR_MODES, type ColorModeId, type HoverInfo } from './render/debugRenderer';
 import { PARAM_CONTROLS } from './paramControls';
@@ -26,6 +27,9 @@ const resetBtn = document.getElementById('reset-btn') as HTMLButtonElement;
 const envControls = document.getElementById('env-controls') as HTMLDivElement;
 const speciesControls = document.getElementById('species-controls') as HTMLDivElement;
 const resetParamsBtn = document.getElementById('reset-params-btn') as HTMLButtonElement;
+const savePresetBtn = document.getElementById('save-preset-btn') as HTMLButtonElement;
+const loadPresetBtn = document.getElementById('load-preset-btn') as HTMLButtonElement;
+const loadPresetInput = document.getElementById('load-preset-input') as HTMLInputElement;
 
 const renderer = new TreeDebugRenderer(canvasContainer);
 
@@ -101,6 +105,53 @@ resetParamsBtn.addEventListener('click', () => {
     const input = document.getElementById(`param-${def.key}`) as (HTMLInputElement & { __setFromParamValue?: (v: number) => void }) | null;
     input?.__setFromParamValue?.(defaultParams[def.key] as number);
   }
+});
+
+/** The full parameter set the "Grow new tree" button would use right now,
+ * given the current sliders and seed field -- this is what "save the
+ * current parameters" means, independent of whether a tree has actually
+ * been grown with them yet. */
+function currentEffectiveParams(): SimulationParams {
+  const seed = Math.max(0, Number(seedInput.value) || 0);
+  return { ...defaultParams, ...paramOverrides, seed };
+}
+
+savePresetBtn.addEventListener('click', () => {
+  const params = currentEffectiveParams();
+  const json = serializeParamsPreset(params);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'tree-preset.json';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+loadPresetBtn.addEventListener('click', () => loadPresetInput.click());
+loadPresetInput.addEventListener('change', () => {
+  const file = loadPresetInput.files?.[0];
+  if (!file) return;
+  void (async () => {
+    try {
+      const text = await file.text();
+      const params = deserializeParamsPreset(text);
+      // Apply every field the preset carries as an override (not just the
+      // ones exposed as sliders -- a preset is the *whole* params object),
+      // then sync slider positions/seed field to match what's now active.
+      for (const key of Object.keys(params) as (keyof SimulationParams)[]) {
+        (paramOverrides as Record<string, number>)[key] = params[key] as number;
+      }
+      seedInput.value = String(params.seed);
+      for (const def of PARAM_CONTROLS) {
+        const input = document.getElementById(`param-${def.key}`) as (HTMLInputElement & { __setFromParamValue?: (v: number) => void }) | null;
+        input?.__setFromParamValue?.(params[def.key] as number);
+      }
+    } catch (err) {
+      alert(`Could not load that file as a tree preset: ${(err as Error).message}`);
+    }
+  })();
+  loadPresetInput.value = '';
 });
 
 let history: SimulationHistory | null = null;
