@@ -115,15 +115,23 @@ function computeSubtreeLoads(segments: readonly BranchSegment[]): SubtreeLoads {
   return { mass, momentX, momentZ, maxHeight };
 }
 
-/** The horizontal distance from a segment's own base to its subtree's
+/** The horizontal distance from an arbitrary reference point (a
+ * segment's own base, or its tip -- see call sites) to its subtree's
  * mass centroid -- the real cantilever lever arm for bending, and the
- * resulting bending moment (N*m) from that subtree's total weight. */
-function bendingMoment(s: BranchSegment, loads: SubtreeLoads): number {
+ * resulting bending moment (N*m) from that subtree's total weight.
+ * Parameterized on the reference point rather than always using the
+ * segment's base: the mechanical requirement genuinely varies along a
+ * segment's own length (less height/mass remains above the tip than
+ * above the base), and both applyPipeModelAndMechanics and
+ * computeMechanicalStressReport need the base-anchored figure, while
+ * applyPipeModelAndMechanics also needs the tip-anchored one -- see the
+ * comment above the tip-floor code below for why. */
+function bendingMoment(refPoint: readonly [number, number, number], s: BranchSegment, loads: SubtreeLoads): number {
   const mass = loads.mass.get(s.id) ?? 0;
   if (mass <= 0) return 0;
   const centroidX = (loads.momentX.get(s.id) ?? 0) / mass;
   const centroidZ = (loads.momentZ.get(s.id) ?? 0) / mass;
-  const leverArm = Math.hypot(centroidX - s.start[0], centroidZ - s.start[2]);
+  const leverArm = Math.hypot(centroidX - refPoint[0], centroidZ - refPoint[2]);
   return mass * GRAVITY * leverArm;
 }
 
@@ -156,7 +164,7 @@ export function computeMechanicalStressReport(segments: readonly BranchSegment[]
   const loads = computeSubtreeLoads(segments);
   const report = new Map<number, MechanicalStress>();
   for (const s of segments) {
-    const moment = bendingMoment(s, loads);
+    const moment = bendingMoment(s.start, s, loads);
     const bendingStressPa = moment > 0 ? (4 * moment) / (Math.PI * Math.pow(s.baseRadius, 3)) : 0;
 
     const heightAboveBase = Math.max(0, (loads.maxHeight.get(s.id) ?? s.end[1]) - s.start[1]);
@@ -257,12 +265,41 @@ export function applyPipeModelAndMechanics(segments: Map<number, BranchSegment>,
     const heightAboveBase = Math.max(0, (loads.maxHeight.get(s.id) ?? s.end[1]) - s.start[1]);
     const buckling = params.mechanicalThickeningFactor * GREENHILL_RADIUS_COEFFICIENT * Math.pow(heightAboveBase, 1.5);
 
-    const moment = bendingMoment(s, loads);
+    const moment = bendingMoment(s.start, s, loads);
     const bendingRadius = moment > 0 ? Math.pow((4 * moment) / (Math.PI * ALLOWABLE_BENDING_STRESS), 1 / 3) : 0;
     const bending = params.mechanicalThickeningFactor * bendingRadius;
 
     s.baseRadius = Math.max(s.baseRadius, pipeBaseRadius, buckling, bending, MIN_TWIG_RADIUS);
-    s.tipRadius = Math.max(Math.min(s.tipRadius, s.baseRadius), pipeTipRadius, MIN_TWIG_RADIUS);
+
+    // The buckling/bending mechanical floors above are evaluated at this
+    // segment's *base* -- but real trunk taper is continuous, not a
+    // sawtooth that jumps back down at every single node. Without an
+    // equivalent floor at the *tip*, a segment could satisfy its base
+    // requirement (e.g. a big Greenhill floor from a tall subtree) while
+    // its tip -- just a few centimeters higher, for a short-internode
+    // species -- carries none of that requirement at all, since only
+    // pipeTipRadius (pure leaf-area demand, no mechanical floor)
+    // constrained it. That produces a physically nonsensical
+    // thick-base/thin-tip discontinuity *within* every single segment,
+    // repeated at every node -- harmless for a species with a few long
+    // internodes (the discontinuity is a small fraction of the real
+    // taper over that length), but for a species with many short ones
+    // (dense, short-internode branching), the trunk is built from
+    // hundreds of these sawtooth resets stacked on top of each other, so
+    // *any* single height sampled along it -- including breast height,
+    // where DBH is measured -- is likely to land near a tip and read as
+    // dramatically thinner than the tree's real, physically-required
+    // supporting cross-section at that height. Mirroring the same two
+    // formulas at the tip (using the tip's own, smaller
+    // height-still-above-it and its own lever arm) makes the floor -- and
+    // so the taper -- continuous along the segment's length instead.
+    const heightAboveTip = Math.max(0, (loads.maxHeight.get(s.id) ?? s.end[1]) - s.end[1]);
+    const bucklingTip = params.mechanicalThickeningFactor * GREENHILL_RADIUS_COEFFICIENT * Math.pow(heightAboveTip, 1.5);
+    const momentTip = bendingMoment(s.end, s, loads);
+    const bendingTipRadius = momentTip > 0 ? Math.pow((4 * momentTip) / (Math.PI * ALLOWABLE_BENDING_STRESS), 1 / 3) : 0;
+    const bendingTip = params.mechanicalThickeningFactor * bendingTipRadius;
+
+    s.tipRadius = Math.max(Math.min(s.tipRadius, s.baseRadius), pipeTipRadius, bucklingTip, bendingTip, MIN_TWIG_RADIUS);
     if (s.tipRadius > s.baseRadius) s.baseRadius = s.tipRadius;
   }
 

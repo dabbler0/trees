@@ -260,6 +260,38 @@ Each simulated year:
      the real safety margin, not an arbitrary tuned constant. See the
      constants and `computeSubtreeLoads`/`bendingMoment` in
      `src/sim/pipeModel.ts`.
+   - Both mechanical floors are evaluated at *both* ends of a segment (its
+     base and its tip -- using the tip's own, smaller "height still above
+     it" for buckling and the tip's own lever arm for bending), not just
+     the base. A segment's own required support genuinely decreases a
+     little across its own length (less height/mass remains above the
+     tip than above the base), so evaluating only at the base and letting
+     the pipe model alone govern the tip made every single segment a tiny
+     thick-base/thin-tip "step" -- invisible for a species with a few
+     long internodes, where one step is a small fraction of the real
+     taper over that length, but for a species with many short ones
+     (dense, low-`maxInternodeLength` branching), the trunk was built
+     from hundreds of these steps stacked directly on top of each other,
+     so almost *any* height sampled along it read far thinner than the
+     tree's real supporting cross-section there -- including breast
+     height, where DBH is measured, which is why a heavily-forked,
+     short-internode tree's *reported* trunk could look dramatically
+     thinner than its actual wood ever was.
+   - DBH itself is measured by walking down from the root always
+     following whichever child is *currently the physically thickest*
+     lineage (same subtree-max-radius comparison the sympodial-growth
+     test above uses), not whichever child happens to share the root's
+     original `order`. The two look equivalent but aren't: a co-dominant
+     fork always gets `order + 1` and never inherits its parent's order
+     (see "Co-dominance" below), so the original seedling leader keeps
+     order 0 for life even after a *different* axis has become the
+     tree's real dominant stem -- exactly the outcome the sympodial
+     mechanism intends. Following order specifically would measure DBH
+     on whatever the original leader happened to grow into, which for a
+     tree with an early low fork can be a comparatively minor stem by
+     maturity, even though the tree's real total wood cross-section
+     (correctly summed across every branch by the pipe model) is fine.
+     See `findTrunkChain` in `src/sim/metrics.ts`.
 7. **Co-dominance** -- a newly-breaking lateral occasionally inherits a
    much larger share of its parent's vigor than usual, making it a
    genuine competing peer instead of a clearly subordinate branch. This

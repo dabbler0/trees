@@ -15,6 +15,26 @@ export function recomputeAliveFlags(segments: Map<number, BranchSegment>): void 
   }
 }
 
+/**
+ * Walks down from the root always following whichever child is currently
+ * the *physically* dominant lineage (the one whose own subtree reaches
+ * the greatest radius anywhere), not whichever child happens to share the
+ * root's original `order`. Matching on order looks like "follow the
+ * trunk" but isn't: a co-dominant fork always gets `order + 1` and never
+ * inherits its parent's order (see growth.ts), so the original seedling
+ * leader keeps order 0 for life even when -- as the sympodial-succession
+ * mechanism this tree exercises intends -- a *different* axis has since
+ * become the tree's real, structurally dominant stem. A diffusely-forking
+ * tree (many early co-dominant splits) is exactly the case where this
+ * bites hardest: DBH would end up measured on whatever the original
+ * leader happens to have grown into, which by maturity can be a
+ * comparatively minor stem, making a tree with substantial real total
+ * wood cross-section (correctly summed across every branch by the pipe
+ * model in pipeModel.ts) read as a deceptively thin trunk. Following
+ * subtree-max-radius instead measures whichever stem is actually thickest
+ * at every fork, exactly like the "which branch is the trunk" logic
+ * exercised in tests/shape.test.ts's sympodial-growth test.
+ */
 function findTrunkChain(segments: readonly BranchSegment[]): BranchSegment[] {
   const byParent = new Map<number | null, BranchSegment[]>();
   for (const s of segments) {
@@ -22,12 +42,30 @@ function findTrunkChain(segments: readonly BranchSegment[]): BranchSegment[] {
     list.push(s);
     byParent.set(s.parentId, list);
   }
+
+  const ordered = [...segments].sort((a, b) => b.id - a.id); // children before parents
+  const subtreeMaxRadius = new Map<number, number>();
+  for (const s of ordered) {
+    let maxRadius = s.baseRadius;
+    for (const cid of s.childIds) maxRadius = Math.max(maxRadius, subtreeMaxRadius.get(cid) ?? 0);
+    subtreeMaxRadius.set(s.id, maxRadius);
+  }
+
   const chain: BranchSegment[] = [];
   let current = byParent.get(null)?.[0];
   while (current) {
     chain.push(current);
     const children = byParent.get(current.id) ?? [];
-    current = children.find((c) => c.order === current!.order);
+    let best: BranchSegment | undefined;
+    let bestRadius = -1;
+    for (const c of children) {
+      const r = subtreeMaxRadius.get(c.id) ?? 0;
+      if (r > bestRadius) {
+        bestRadius = r;
+        best = c;
+      }
+    }
+    current = best;
   }
   return chain;
 }
