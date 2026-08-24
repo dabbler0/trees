@@ -495,3 +495,154 @@ export interface SimulationHistory {
   params: SimulationParams;
   states: TreeState[];
 }
+
+// --- Forest simulation -----------------------------------------------
+//
+// A forest is a *population* of individual trees, each grown by exactly
+// the same single-tree engine above (stepYear/growRoots), sharing one
+// species' SimulationParams -- reproduction makes more individuals of the
+// same species, not new species -- but each with its own (x, z) planting
+// position, its own RNG stream, and its own independent age (a
+// later-germinated tree is younger than its parent at the same forest
+// year). See src/sim/forest.ts.
+//
+// Two forces couple otherwise-independent trees together each forest
+// year: light competition (a forest-wide shadow-casting light profile
+// built from every living tree's canopy, in world coordinates -- see
+// buildForestLightProfile in light.ts, a direct extension of the
+// single-tree shadow-map) and root-space competition (a forest-wide
+// below-ground crowding profile -- see buildRootResourceProfile in
+// rootCompetition.ts, the isotropic below-ground analogue of the same
+// idea). Both feed into the ordinary per-tree stepYear the exact same way
+// a lone tree's own light profile always has, via stepYear's optional
+// `external` argument -- a lone tree (external omitted) grows exactly as
+// before.
+
+/** Forest-management-level constants -- population dynamics, not species
+ * biology, so they're a separate params object from SimulationParams
+ * (which every tree in the forest shares) rather than more fields on it.
+ * See src/sim/forestParams.ts for defaults/citations. */
+export interface ForestParams {
+  /** How many forest-years to simulate. */
+  years: number;
+  /**
+   * Hard cap on concurrently-*alive* trees. Every tree keeps the full
+   * mechanical/root model and a full per-year scrubbable history exactly
+   * like a single tree does today, so this is a real cost multiplier
+   * (memory and CPU both scale with it) -- kept to a "small stand" scale
+   * on purpose rather than trying to approximate a much larger stand with
+   * simplified trees.
+   */
+  maxTrees: number;
+  /** A tree becomes reproductively mature (starts rolling for seed
+   * dispersal each year) once its own height reaches this, meters. */
+  maturityHeight: number;
+  /** Per-mature-tree, per-forest-year probability of a seed-dispersal event. */
+  reproductionProbability: number;
+  /** Seeds scattered per successful dispersal event. */
+  seedsPerEvent: number;
+  /** Max scatter distance from the parent tree's own base, meters -- an
+   * actual distance is drawn uniformly at random up to this on each
+   * scattering event (real seed dispersal -- wind, gravity, animals --
+   * falls off with distance from the parent; a uniform draw up to a cap
+   * is a simple stand-in for that falloff without modeling a full
+   * dispersal kernel). */
+  seedDispersalRadius: number;
+  /** Minimum allowed spacing between a new seedling and any existing
+   * living tree, meters -- real seedlings essentially never establish
+   * directly in an existing trunk's footprint. */
+  minTreeSpacing: number;
+  /** Ground-level light exposure (same [0,1] Beer-Lambert scale as a
+   * bud's own lightExposure) a seed needs at its landing spot to actually
+   * germinate -- real tree seedlings establish poorly in the deep shade
+   * of an existing closed canopy, which is what stops a mature stand's
+   * own understory from germinating in place under itself indefinitely. */
+  germinationLightThreshold: number;
+  /** A tree's own mean canopy light exposure has to stay at or below this
+   * for `lightStarvationYears` running before whole-tree mortality even
+   * starts rolling -- the below-ground/above-ground shared-resource
+   * analogue of a single bud's own senescenceLightThreshold, but applied
+   * to a *whole tree* (see ForestTree.starvedYears) rather than to one
+   * bud, since this is what lets a whole light-starved tree die and be
+   * removed rather than just shedding its lowest branches. */
+  lightStarvationThreshold: number;
+  /** Years a tree can spend below lightStarvationThreshold before its
+   * whole-tree death hazard starts ramping up (rampedDeathProbability,
+   * same asymptotic-hazard style used throughout growth.ts, never a hard
+   * single-year cutoff). */
+  lightStarvationYears: number;
+}
+
+/** A currently-alive tree's per-forest-year bookkeeping that doesn't
+ * belong on TreeState/SimulationParams themselves (they're both
+ * per-*individual-tree-age* concepts, not per-forest-year population
+ * ones). */
+export interface ForestTree {
+  /** Unique within a forest run; never reused, including after death. */
+  id: number;
+  /** World-space (x, z) planting position, meters -- constant for this
+   * tree's whole life. Its own TreeState.segments stay in the same
+   * tree-local coordinates a lone tree's always have (base at the
+   * origin); this offset is applied only when building forest-wide
+   * cross-tree profiles and when rendering. */
+  position: readonly [number, number];
+  /** This tree's own RNG seed (minted from the forest's own RNG stream at
+   * germination), so a forest run is fully deterministic from one top-level
+   * forestSeed the same way a single tree run is from params.seed. */
+  seed: number;
+  /** Forest-year this tree germinated (age 0 at that year). */
+  plantedYear: number;
+  /** Consecutive forest-years (so far) this tree's mean canopy light
+   * exposure has been at or below lightStarvationThreshold -- see
+   * ForestParams.lightStarvationYears. Resets to 0 the moment exposure
+   * recovers above threshold in any given year. */
+  starvedYears: number;
+  /** This tree's own current TreeState (its state at its own age =
+   * currentForestYear - plantedYear). */
+  state: TreeState;
+}
+
+/** A tree that has died and been removed from the forest -- kept only as
+ * a small "memorial" record (not its full segment graph/history, which is
+ * dropped) for the death log/UI, since a dead, removed tree has no further
+ * effect on the simulation. */
+export interface DeadTree {
+  id: number;
+  position: readonly [number, number];
+  plantedYear: number;
+  diedYear: number;
+  /** Cause, for the UI's death log -- currently the only whole-tree
+   * mortality mechanism modeled is sustained light starvation, but this
+   * is a string rather than a fixed union so a future mechanism (e.g.
+   * root-space starvation, wind-throw) doesn't need every past save file
+   * to be migrated. */
+  cause: string;
+  finalHeight: number;
+  finalDbh: number;
+}
+
+/** One forest-year's full, self-contained snapshot: every currently-alive
+ * tree's own current TreeState, plus the death log so far. Deliberately
+ * does *not* nest each tree's own per-year sub-history (that would be
+ * O(forestYears x treeCount x treeAge) -- unlike a single tree's history,
+ * which keeps every past year's full TreeState because that *is* the
+ * record being built, a forest scrub only ever needs "what did the forest
+ * look like in year Y", which is exactly this). */
+export interface ForestSnapshot {
+  forestYear: number;
+  trees: ForestTree[];
+  deadTrees: DeadTree[];
+}
+
+export interface ForestHistory {
+  formatVersion: 1;
+  /** The one species every tree in the forest shares (see the module doc
+   * above) -- reproduction makes more individuals, not new species. */
+  params: SimulationParams;
+  forestParams: ForestParams;
+  /** Top-level RNG seed the whole forest run (reproduction rolls,
+   * dispersal offsets, and each new tree's own minted seed) is
+   * deterministic from. */
+  forestSeed: number;
+  states: ForestSnapshot[];
+}

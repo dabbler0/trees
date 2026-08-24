@@ -86,10 +86,23 @@ const DEFAULT_OPTIONS: DebugRendererOptions = {
 /** What gets handed to a hover callback -- deliberately carries the full
  * underlying data object, not a pre-formatted string, so the host page
  * can render whatever tooltip/inspector it wants (this is the "easy to
- * add debug info on hover" extension point). */
+ * add debug info on hover" extension point). `treeId` is always 0 for a
+ * lone tree loaded via setState (see RenderTree's own doc) -- a forest
+ * host page can use it to tell which tree was hovered. */
 export type HoverInfo =
-  | { kind: 'segment'; segment: BranchSegment; tipBud: Bud | undefined }
-  | { kind: 'leaf'; leaf: Leaf };
+  | { kind: 'segment'; treeId: number; segment: BranchSegment; tipBud: Bud | undefined }
+  | { kind: 'leaf'; treeId: number; leaf: Leaf };
+
+/** One tree's own state plus where it sits in the shared world (its own
+ * local segment coordinates stay untouched, base at the origin -- this
+ * offset is applied only at render time, the same convention
+ * stepYear/light.ts's forest support uses). A lone tree rendered via
+ * setState is just a single-entry array with offset (0, 0) and id 0. */
+export interface RenderTree {
+  id: number;
+  offset: readonly [number, number];
+  state: TreeState;
+}
 
 const SKELETON_RADIUS = 0.015; // meters, uniform line-like thickness when showThickness=false
 const UNIT_CYLINDER_SEGMENTS = 7; // low-poly: this can be rendered thousands of times over
@@ -138,12 +151,15 @@ export class TreeDebugRenderer {
 
   private branchMesh: THREE.InstancedMesh | null = null;
   private leafMesh: THREE.InstancedMesh | null = null;
-  /** Parallel arrays: instance index -> underlying id, for hover lookups. */
+  /** Parallel arrays: instance index -> underlying (treeId, id), for hover
+   * lookups. A lone tree (setState) always has treeId 0 throughout. */
+  private branchIndexToTreeId: number[] = [];
   private branchIndexToSegmentId: number[] = [];
+  private leafIndexToTreeId: number[] = [];
   private leafIndexToLeafId: number[] = [];
 
   private options: DebugRendererOptions = { ...DEFAULT_OPTIONS };
-  private currentState: TreeState | null = null;
+  private currentTrees: RenderTree[] = [];
 
   private raycaster = new THREE.Raycaster();
   private pointerNdc = new THREE.Vector2();
@@ -151,12 +167,15 @@ export class TreeDebugRenderer {
   private sunLight: THREE.DirectionalLight;
   private sunTarget = new THREE.Object3D();
   private ground: THREE.Mesh;
-  /** Tracks the tree's approximate size (set by frame()) so the sun's
-   * shadow camera frustum can be sized to just cover it -- an
-   * orthographic shadow camera sized for the whole scene would waste
-   * almost all of its depth-buffer resolution on empty space. */
+  /** Tracks the current scene's approximate size/center (set by frame()/
+   * frameForest()) so the sun's shadow camera frustum can be sized to
+   * just cover it -- an orthographic shadow camera sized for the whole
+   * scene would waste almost all of its depth-buffer resolution on empty
+   * space -- and so the sun can be repositioned relative to wherever the
+   * scene is actually centered (a lone tree at the origin, or a whole
+   * forest's own bounding center, which need not be the origin). */
   private boundingRadius = 8;
-  private centerHeight = 4;
+  private sceneCenter = new THREE.Vector3(0, 4, 0);
   /** Unit vector from the tree toward the sun -- same convention as
    * sim/sun.ts's sunDirection(). Persisted so resizing the shadow camera
    * to a newly-loaded tree's size doesn't need to round-trip through the
@@ -228,13 +247,47 @@ export class TreeDebugRenderer {
   frame(height: number, crownWidth: number): void {
     const centerHeight = height / 2;
     const boundingRadius = Math.max(1.5, height / 2, crownWidth / 2) * 1.15;
-    this.centerHeight = centerHeight;
+    this.applyFraming(new THREE.Vector3(0, centerHeight, 0), boundingRadius);
+  }
+
+  /** The multi-tree analogue of frame(): fits the camera to a whole
+   * forest's bounding footprint (every living tree's own crown extent,
+   * offset by its planting position) rather than one tree centered at
+   * the origin. */
+  frameForest(trees: readonly { offset: readonly [number, number]; height: number; crownWidth: number }[]): void {
+    if (trees.length === 0) {
+      this.frame(10, 6);
+      return;
+    }
+    let maxHeight = 0;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const t of trees) {
+      maxHeight = Math.max(maxHeight, t.height);
+      const r = Math.max(0.5, t.crownWidth / 2);
+      minX = Math.min(minX, t.offset[0] - r);
+      maxX = Math.max(maxX, t.offset[0] + r);
+      minZ = Math.min(minZ, t.offset[1] - r);
+      maxZ = Math.max(maxZ, t.offset[1] + r);
+    }
+    const centerX = (minX + maxX) / 2;
+    const centerZ = (minZ + maxZ) / 2;
+    const footprintSpread = Math.max(maxX - minX, maxZ - minZ);
+    const centerHeight = maxHeight / 2;
+    const boundingRadius = Math.max(1.5, maxHeight / 2, footprintSpread / 2) * 1.15;
+    this.applyFraming(new THREE.Vector3(centerX, centerHeight, centerZ), boundingRadius);
+  }
+
+  private applyFraming(center: THREE.Vector3, boundingRadius: number): void {
+    this.sceneCenter.copy(center);
     this.boundingRadius = boundingRadius;
     const fovRad = (this.camera.fov * Math.PI) / 180;
     const distance = boundingRadius / Math.sin(fovRad / 2);
-    this.controls.target.set(0, centerHeight, 0);
+    this.controls.target.copy(center);
     const dir = new THREE.Vector3(0.55, 0.4, 0.75).normalize();
-    this.camera.position.copy(dir.multiplyScalar(distance)).add(new THREE.Vector3(0, centerHeight, 0));
+    this.camera.position.copy(dir.multiplyScalar(distance)).add(center);
     this.camera.near = Math.max(0.05, distance / 200);
     this.camera.far = distance * 10 + boundingRadius;
     this.camera.updateProjectionMatrix();
@@ -277,9 +330,8 @@ export class TreeDebugRenderer {
 
   private repositionSun(): void {
     const distance = this.boundingRadius * 4 + 20;
-    const center = new THREE.Vector3(0, this.centerHeight, 0);
-    this.sunLight.position.copy(this.sunDir).multiplyScalar(distance).add(center);
-    this.sunTarget.position.copy(center);
+    this.sunLight.position.copy(this.sunDir).multiplyScalar(distance).add(this.sceneCenter);
+    this.sunTarget.position.copy(this.sceneCenter);
     this.sunLight.target.updateMatrixWorld();
   }
 
@@ -294,7 +346,7 @@ export class TreeDebugRenderer {
 
   setOptions(partial: Partial<DebugRendererOptions>): void {
     this.options = { ...this.options, ...partial };
-    if (this.currentState) this.rebuild(this.currentState);
+    if (this.currentTrees.length > 0) this.rebuild(this.currentTrees);
     this.render();
   }
 
@@ -302,9 +354,18 @@ export class TreeDebugRenderer {
     return { ...this.options };
   }
 
+  /** Loads a single tree, centered at the world origin -- sugar for
+   * setForestState with one entry at offset (0, 0), id 0. */
   setState(state: TreeState): void {
-    this.currentState = state;
-    this.rebuild(state);
+    this.setForestState([{ id: 0, offset: [0, 0], state }]);
+  }
+
+  /** Loads one or more trees at once, each at its own world-space
+   * offset -- the forest renderer entry point. A single-tree host (the
+   * "Single tree" UI mode) just calls setState above instead. */
+  setForestState(trees: RenderTree[]): void {
+    this.currentTrees = trees;
+    this.rebuild(trees);
     this.render();
   }
 
@@ -312,15 +373,22 @@ export class TreeDebugRenderer {
     if (mesh) this.scene.remove(mesh);
   }
 
-  private rebuild(state: TreeState): void {
+  private rebuild(trees: readonly RenderTree[]): void {
     this.disposeMesh(this.branchMesh);
     this.disposeMesh(this.leafMesh);
 
-    const tipBudBySegmentId = new Map<number, Bud>();
-    for (const bud of state.buds) {
-      if (bud.status !== 'dead') tipBudBySegmentId.set(bud.segmentId, bud);
+    // maxHydraulicResistance is computed across *every* tree being shown
+    // at once, so the hydraulicStress color mode's heatmap stays on one
+    // consistent scale across a whole forest scene rather than each tree
+    // normalizing against only its own max.
+    let maxHydraulicResistance = 0;
+    let totalSegments = 0;
+    let totalLeaves = 0;
+    for (const t of trees) {
+      totalSegments += t.state.segments.length;
+      totalLeaves += this.options.showLeaves ? t.state.leaves.length : 0;
+      for (const s of t.state.segments) maxHydraulicResistance = Math.max(maxHydraulicResistance, s.hydraulicResistance);
     }
-    const maxHydraulicResistance = state.segments.reduce((m, s) => Math.max(m, s.hydraulicResistance), 0);
     const colorMode = getColorMode(this.options.colorMode);
     const isPhoto = this.options.colorMode === 'photo';
 
@@ -332,12 +400,12 @@ export class TreeDebugRenderer {
     this.ground.receiveShadow = isPhoto;
 
     // --- Branch skeleton / thickness ---
-    const segments = state.segments;
-    const branchMesh = new THREE.InstancedMesh(this.branchGeometry, this.branchMaterial, Math.max(1, segments.length));
-    branchMesh.count = segments.length;
+    const branchMesh = new THREE.InstancedMesh(this.branchGeometry, this.branchMaterial, Math.max(1, totalSegments));
+    branchMesh.count = totalSegments;
     branchMesh.castShadow = isPhoto;
     branchMesh.receiveShadow = isPhoto;
-    this.branchIndexToSegmentId = new Array(segments.length);
+    this.branchIndexToTreeId = new Array(totalSegments);
+    this.branchIndexToSegmentId = new Array(totalSegments);
 
     const m = new THREE.Matrix4();
     const up = new THREE.Vector3(0, 1, 0);
@@ -349,71 +417,91 @@ export class TreeDebugRenderer {
     const startV = new THREE.Vector3();
     const endV = new THREE.Vector3();
 
-    segments.forEach((s, i) => {
-      startV.set(s.start[0], s.start[1], s.start[2]);
-      endV.set(s.end[0], s.end[1], s.end[2]);
-      const len = Math.max(0.001, distance(s.start, s.end));
-      dir.subVectors(endV, startV).normalize();
-      quat.setFromUnitVectors(up, dir);
-      mid.addVectors(startV, endV).multiplyScalar(0.5);
-      const radius = this.options.showThickness ? Math.max((s.baseRadius + s.tipRadius) / 2, 0.003) : SKELETON_RADIUS;
-      scaleVec.set(radius, len, radius);
-      m.compose(mid, quat, scaleVec);
-      branchMesh.setMatrixAt(i, m);
-      branchMesh.setColorAt(i, colorMode.color({ segment: s, tipBud: tipBudBySegmentId.get(s.id), currentYear: state.year, maxHydraulicResistance }));
-      this.branchIndexToSegmentId[i] = s.id;
-    });
+    let branchIndex = 0;
+    for (const t of trees) {
+      const [ox, oz] = t.offset;
+      const tipBudBySegmentId = new Map<number, Bud>();
+      for (const bud of t.state.buds) {
+        if (bud.status !== 'dead') tipBudBySegmentId.set(bud.segmentId, bud);
+      }
+      for (const s of t.state.segments) {
+        startV.set(s.start[0] + ox, s.start[1], s.start[2] + oz);
+        endV.set(s.end[0] + ox, s.end[1], s.end[2] + oz);
+        const len = Math.max(0.001, distance(s.start, s.end));
+        dir.subVectors(endV, startV).normalize();
+        quat.setFromUnitVectors(up, dir);
+        mid.addVectors(startV, endV).multiplyScalar(0.5);
+        const radius = this.options.showThickness ? Math.max((s.baseRadius + s.tipRadius) / 2, 0.003) : SKELETON_RADIUS;
+        scaleVec.set(radius, len, radius);
+        m.compose(mid, quat, scaleVec);
+        branchMesh.setMatrixAt(branchIndex, m);
+        branchMesh.setColorAt(
+          branchIndex,
+          colorMode.color({ segment: s, tipBud: tipBudBySegmentId.get(s.id), currentYear: t.state.year, maxHydraulicResistance })
+        );
+        this.branchIndexToTreeId[branchIndex] = t.id;
+        this.branchIndexToSegmentId[branchIndex] = s.id;
+        branchIndex++;
+      }
+    }
     branchMesh.instanceMatrix.needsUpdate = true;
     if (branchMesh.instanceColor) branchMesh.instanceColor.needsUpdate = true;
     this.scene.add(branchMesh);
     this.branchMesh = branchMesh;
 
     // --- Leaves ---
-    if (this.options.showLeaves && state.leaves.length > 0) {
-      const leaves = state.leaves;
+    if (totalLeaves > 0) {
       const geometry = isPhoto ? this.leafPhotoGeometry : this.leafGeometry;
       const material = isPhoto ? this.leafPhotoMaterial : this.leafMaterial;
-      const leafMesh = new THREE.InstancedMesh(geometry, material, leaves.length);
-      leafMesh.count = leaves.length;
+      const leafMesh = new THREE.InstancedMesh(geometry, material, totalLeaves);
+      leafMesh.count = totalLeaves;
       leafMesh.castShadow = isPhoto;
       leafMesh.receiveShadow = isPhoto;
-      this.leafIndexToLeafId = new Array(leaves.length);
+      this.leafIndexToTreeId = new Array(totalLeaves);
+      this.leafIndexToLeafId = new Array(totalLeaves);
       const leafColor = new THREE.Color('#4a8c3f');
       const tint = new THREE.Color();
-      leaves.forEach((leaf, i) => {
-        if (isPhoto) {
-          // A flat, roughly leaf-area-sized square plane, oriented along
-          // this leaf's own (already-jittered, per-leaf) normal rather
-          // than billboarded toward the camera -- avoids a per-frame
-          // update on every instance, and a real canopy's leaves really
-          // do face many different directions at once.
-          const side = Math.max(0.05, Math.sqrt(leaf.area) * 1.6);
-          dir.set(leaf.normal[0], leaf.normal[1], leaf.normal[2]).normalize();
-          quat.setFromUnitVectors(forward, dir);
-          scaleVec.set(side, side, side);
-          mid.set(leaf.position[0], leaf.position[1], leaf.position[2]);
-          m.compose(mid, quat, scaleVec);
-          // Subtle per-leaf color variation (deterministic from id) so a
-          // dense canopy doesn't read as one flat-shaded texture repeated
-          // thousands of times.
-          const jitter = ((leaf.id * 2654435761) >>> 0) / 0xffffffff;
-          tint.setHSL(0.30 + jitter * 0.06, 0.5 + jitter * 0.15, 0.42 + jitter * 0.16);
-          leafMesh.setColorAt(i, tint);
-        } else {
-          const r = Math.max(0.015, Math.sqrt(leaf.area / Math.PI));
-          m.makeScale(r, r, r);
-          m.setPosition(leaf.position[0], leaf.position[1], leaf.position[2]);
-          leafMesh.setColorAt(i, leafColor);
+      let leafIndex = 0;
+      for (const t of trees) {
+        const [ox, oz] = t.offset;
+        for (const leaf of t.state.leaves) {
+          if (isPhoto) {
+            // A flat, roughly leaf-area-sized square plane, oriented along
+            // this leaf's own (already-jittered, per-leaf) normal rather
+            // than billboarded toward the camera -- avoids a per-frame
+            // update on every instance, and a real canopy's leaves really
+            // do face many different directions at once.
+            const side = Math.max(0.05, Math.sqrt(leaf.area) * 1.6);
+            dir.set(leaf.normal[0], leaf.normal[1], leaf.normal[2]).normalize();
+            quat.setFromUnitVectors(forward, dir);
+            scaleVec.set(side, side, side);
+            mid.set(leaf.position[0] + ox, leaf.position[1], leaf.position[2] + oz);
+            m.compose(mid, quat, scaleVec);
+            // Subtle per-leaf color variation (deterministic from id) so a
+            // dense canopy doesn't read as one flat-shaded texture repeated
+            // thousands of times.
+            const jitter = ((leaf.id * 2654435761) >>> 0) / 0xffffffff;
+            tint.setHSL(0.3 + jitter * 0.06, 0.5 + jitter * 0.15, 0.42 + jitter * 0.16);
+            leafMesh.setColorAt(leafIndex, tint);
+          } else {
+            const r = Math.max(0.015, Math.sqrt(leaf.area / Math.PI));
+            m.makeScale(r, r, r);
+            m.setPosition(leaf.position[0] + ox, leaf.position[1], leaf.position[2] + oz);
+            leafMesh.setColorAt(leafIndex, leafColor);
+          }
+          leafMesh.setMatrixAt(leafIndex, m);
+          this.leafIndexToTreeId[leafIndex] = t.id;
+          this.leafIndexToLeafId[leafIndex] = leaf.id;
+          leafIndex++;
         }
-        leafMesh.setMatrixAt(i, m);
-        this.leafIndexToLeafId[i] = leaf.id;
-      });
+      }
       leafMesh.instanceMatrix.needsUpdate = true;
       if (leafMesh.instanceColor) leafMesh.instanceColor.needsUpdate = true;
       this.scene.add(leafMesh);
       this.leafMesh = leafMesh;
     } else {
       this.leafMesh = null;
+      this.leafIndexToTreeId = [];
       this.leafIndexToLeafId = [];
     }
   }
@@ -428,7 +516,7 @@ export class TreeDebugRenderer {
   };
 
   private pick(): HoverInfo | null {
-    if (!this.currentState) return null;
+    if (this.currentTrees.length === 0) return null;
     this.raycaster.setFromCamera(this.pointerNdc, this.camera);
     const targets = [this.branchMesh, this.leafMesh].filter((x): x is THREE.InstancedMesh => x !== null);
     const hits = this.raycaster.intersectObjects(targets, false);
@@ -436,17 +524,21 @@ export class TreeDebugRenderer {
     const hit = hits[0];
     if (hit.instanceId === undefined) return null;
     if (hit.object === this.branchMesh) {
+      const treeId = this.branchIndexToTreeId[hit.instanceId];
       const segId = this.branchIndexToSegmentId[hit.instanceId];
-      const segment = this.currentState.segments.find((s) => s.id === segId);
-      if (!segment) return null;
-      const tipBud = this.currentState.buds.find((b) => b.segmentId === segId && b.status !== 'dead');
-      return { kind: 'segment', segment, tipBud };
+      const tree = this.currentTrees.find((t) => t.id === treeId);
+      const segment = tree?.state.segments.find((s) => s.id === segId);
+      if (!tree || !segment) return null;
+      const tipBud = tree.state.buds.find((b) => b.segmentId === segId && b.status !== 'dead');
+      return { kind: 'segment', treeId, segment, tipBud };
     }
     if (hit.object === this.leafMesh) {
+      const treeId = this.leafIndexToTreeId[hit.instanceId];
       const leafId = this.leafIndexToLeafId[hit.instanceId];
-      const leaf = this.currentState.leaves.find((l) => l.id === leafId);
-      if (!leaf) return null;
-      return { kind: 'leaf', leaf };
+      const tree = this.currentTrees.find((t) => t.id === treeId);
+      const leaf = tree?.state.leaves.find((l) => l.id === leafId);
+      if (!tree || !leaf) return null;
+      return { kind: 'leaf', treeId, leaf };
     }
     return null;
   }

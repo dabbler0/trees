@@ -10,11 +10,12 @@ import {
   scale,
   type Vec3,
 } from '../model/vec3';
-import { buildLightProfile } from './light';
+import { buildLightProfile, type LightProfile } from './light';
 import { applyPipeModelAndMechanics, computeHydraulicResistances } from './pipeModel';
 import { recomputeAliveFlags, computeMetrics } from './metrics';
 import { placeLeaves } from './leaves';
 import { sunDirection } from './sun';
+import type { RootResourceProfile } from './rootCompetition';
 
 const MIN_TWIG_RADIUS = 0.0025;
 /**
@@ -66,7 +67,7 @@ const MAX_SEGMENTS = 120_000;
  * deaths spread smoothly across many years no matter how large the
  * cohort or how synchronized its members' threshold-crossing was.
  */
-function rampedDeathProbability(yearsPast: number, tauYears: number, maxHazard: number): number {
+export function rampedDeathProbability(yearsPast: number, tauYears: number, maxHazard: number): number {
   if (yearsPast <= 0) return 0;
   return maxHazard * (1 - Math.exp(-yearsPast / tauYears));
 }
@@ -91,6 +92,38 @@ export interface GrowthContext {
    * createInitialState) rather than resuming mid-history.
    */
   smoothedCarbonSupply: number;
+}
+
+/**
+ * Optional cross-tree inputs for a forest simulation (src/sim/forest.ts).
+ * Omitted entirely, stepYear/growRoots behave exactly as a lone tree
+ * always has: a self-built, single-tree light profile and no root-space
+ * competition. This is what lets the single-tree engine and its whole
+ * existing test suite stay untouched by the forest feature.
+ */
+export interface ExternalGrowthInputs {
+  /** This tree's own (x, z) planting position in the forest's shared
+   * world coordinate system. A lone tree's local coordinates already
+   * sit at the world origin, so omitting this is equivalent to (0, 0). */
+  worldOffset?: readonly [number, number];
+  /** A pre-built forest-wide light profile, already in world
+   * coordinates (see buildForestLightProfile) -- used in place of a
+   * profile built from this tree's own foliage alone, so a neighboring
+   * tree's canopy can actually shade this one. */
+  lightProfile?: LightProfile;
+  /** This tree's own id in the forest -- required whenever
+   * rootResourceProfile is supplied, so it can exclude this tree's own
+   * roots from the local crowding it experiences (see
+   * RootResourceProfile.factorAt). */
+  treeId?: number;
+  /** A pre-built forest-wide root-space-crowding profile (see
+   * buildRootResourceProfile). Omitted means no root-space competition. */
+  rootResourceProfile?: RootResourceProfile;
+}
+
+function toWorld(p: Vec3, offset: readonly [number, number] | undefined): Vec3 {
+  if (!offset || (offset[0] === 0 && offset[1] === 0)) return p;
+  return [p[0] + offset[0], p[1], p[2] + offset[1]];
 }
 
 export function createInitialState(params: SimulationParams): { state: TreeState; ctx: GrowthContext } {
@@ -349,7 +382,8 @@ function growRoots(
   rng: () => number,
   ctx: GrowthContext,
   year: number,
-  segments: Map<number, BranchSegment>
+  segments: Map<number, BranchSegment>,
+  external?: ExternalGrowthInputs
 ): Bud[] {
   const buds: Bud[] = prevRootBuds.map((b) => ({ ...b }));
   const nonDeadRootBuds = buds.filter((b) => b.status !== 'dead');
@@ -373,7 +407,14 @@ function growRoots(
     if (bud.status === 'dead') continue;
     const depth = Math.max(0, -bud.position[1]);
     const depthFactor = heightVigorFactor(depth, params.rootDepthHalfDepth);
-    const demand = Math.max(0, Math.min(1, bud.hormonalVigor * depthFactor));
+    // Forest root-space competition (see rootCompetition.ts): a lone
+    // tree (no rootResourceProfile supplied) always gets factor 1, so
+    // this is a no-op outside a forest.
+    const competitionFactor =
+      external?.rootResourceProfile && external.treeId !== undefined
+        ? external.rootResourceProfile.factorAt(toWorld(bud.position, external.worldOffset), external.treeId)
+        : 1;
+    const demand = Math.max(0, Math.min(1, bud.hormonalVigor * depthFactor * competitionFactor));
     bud.ageYears += 1;
     bud.status = 'active';
 
@@ -525,13 +566,20 @@ export function stepYear(
   prev: TreeState,
   params: SimulationParams,
   rng: () => number,
-  ctx: GrowthContext
+  ctx: GrowthContext,
+  external?: ExternalGrowthInputs
 ): TreeState {
   const year = prev.year + 1;
   const segments = new Map<number, BranchSegment>();
   for (const s of prev.segments) segments.set(s.id, { ...s, childIds: [...s.childIds] });
 
-  const lightProfile = buildLightProfile(prev.segments, params);
+  // A lone tree (external omitted) builds its own light profile from its
+  // own foliage alone, exactly as before; a forest tree instead grows
+  // against a shared, pre-built forest-wide profile so a neighbor's
+  // canopy can actually shade it (see ExternalGrowthInputs).
+  const lightProfile = external?.lightProfile ?? buildLightProfile(prev.segments, params);
+  const worldOffset = external?.worldOffset;
+  const exposureAt = (p: Vec3): number => lightProfile.exposureAt(toWorld(p, worldOffset));
   const sunDir = sunDirection(params);
   const ageRamp = Math.min(1, year / params.juvenileRampYears);
   const potentialElongation =
@@ -563,7 +611,7 @@ export function stepYear(
     if (s.kind !== 'shoot' || s.leafArea <= 0) continue;
     const mid: Vec3 = [(s.start[0] + s.end[0]) / 2, (s.start[1] + s.end[1]) / 2, (s.start[2] + s.end[2]) / 2];
     const heightEfficiency = heightEfficiencyFactor(mid[1], params.heightVigorHalfHeight);
-    effectiveSunlitLeafArea += s.leafArea * lightProfile.exposureAt(mid) * heightEfficiency;
+    effectiveSunlitLeafArea += s.leafArea * exposureAt(mid) * heightEfficiency;
   }
   // Smoothed rather than this year's raw value (see GrowthContext.
   // smoothedCarbonSupply): a whole tree's carbon economy carries reserves
@@ -616,7 +664,7 @@ export function stepYear(
   // *rank* comes straight from the Beer-Lambert exposure), just applied
   // as "shed the shadiest tenth" instead of "shed everyone below X".
   const nonDeadBuds = buds.filter((b) => b.status !== 'dead');
-  const exposures = nonDeadBuds.map((b) => lightProfile.exposureAt(b.position)).sort((a, b) => a - b);
+  const exposures = nonDeadBuds.map((b) => exposureAt(b.position)).sort((a, b) => a - b);
   const capacityFraction = nonDeadBuds.length / params.maxActiveBuds;
   const rampSpan = Math.max(1e-6, 1 - params.selfThinningOnsetFraction);
   const thinFraction =
@@ -650,7 +698,7 @@ export function stepYear(
     if (bud.status === 'dead') continue;
 
     const hydraulicFactor = heightVigorFactor(bud.position[1], params.heightVigorHalfHeight);
-    const exposure = lightProfile.exposureAt(bud.position);
+    const exposure = exposureAt(bud.position);
     const demand = Math.max(0, Math.min(1, bud.hormonalVigor * hydraulicFactor));
 
     bud.auxinLevel = bud.hormonalVigor;
@@ -868,7 +916,7 @@ export function stepYear(
       if (liveBudCount >= params.maxActiveBuds) break;
       const frac = (i + 1) / (params.nodesPerInternode + 1);
       const nodePos = lerp(start, end, frac);
-      const nodeExposure = lightProfile.exposureAt(nodePos);
+      const nodeExposure = exposureAt(nodePos);
       // Apical dominance throttles branching rate itself, not just the
       // resulting branch's eventual vigor: a strongly dominant, high
       // hormonal-vigor apex suppresses bud break nearby, while a
@@ -940,7 +988,7 @@ export function stepYear(
   // netCarbonForRoots above). Mutates `segments` in place exactly like
   // the shoot loop above, sharing the same id counters.
   const prevRootBuds = prev.buds.filter((b) => b.kind === 'root');
-  const rootBuds = growRoots(prevRootBuds, netCarbonForRoots, potentialElongation, minGrowthLength, params, rng, ctx, year, segments);
+  const rootBuds = growRoots(prevRootBuds, netCarbonForRoots, potentialElongation, minGrowthLength, params, rng, ctx, year, segments, external);
 
   const allBuds = [...buds, ...newBuds, ...rootBuds];
 

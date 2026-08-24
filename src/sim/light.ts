@@ -94,7 +94,7 @@ function diffuseSkyDirections(): Vec3[] {
 
 const DIFFUSE_DIRECTIONS = diffuseSkyDirections();
 
-interface ShadingSource {
+export interface ShadingSource {
   position: Vec3;
   area: number;
 }
@@ -181,17 +181,51 @@ function shadowingAreaAt(index: DirectionalIndex, position: Vec3): number {
   return prefixArea[lo]; // lo may equal depths.length; prefixArea has one extra trailing "total" slot for that case
 }
 
-export function buildLightProfile(segments: readonly BranchSegment[], params: SimulationParams): LightProfile {
-  const sunDir = sunDirection(params);
-
+/**
+ * Turns a segment list into shadow-casting sources (this function's own
+ * former inline body inside buildLightProfile) -- pulled out so a forest
+ * can collect sources from *several* trees, each translated by its own
+ * (x, z) planting position, into one shared list before indexing (see
+ * buildForestLightProfile below). A lone tree's own local coordinates
+ * *are* world coordinates when offset is omitted (its base sits at the
+ * origin), so this is exactly what buildLightProfile already did.
+ *
+ * Only 'shoot' segments cast shade here -- a root segment's leafArea is a
+ * repurposed *below-ground* absorptive-area field (see the doc on
+ * BranchSegment.leafArea), not real foliage, and must never occlude
+ * light.
+ */
+export function collectShadingSources(
+  segments: readonly BranchSegment[],
+  offset: readonly [number, number] = [0, 0]
+): ShadingSource[] {
   const sources: ShadingSource[] = [];
   for (const s of segments) {
-    if (s.leafArea <= 0) continue;
+    if (s.kind !== 'shoot' || s.leafArea <= 0) continue;
     sources.push({
-      position: [(s.start[0] + s.end[0]) / 2, (s.start[1] + s.end[1]) / 2, (s.start[2] + s.end[2]) / 2],
+      position: [
+        (s.start[0] + s.end[0]) / 2 + offset[0],
+        (s.start[1] + s.end[1]) / 2,
+        (s.start[2] + s.end[2]) / 2 + offset[1],
+      ],
       area: s.leafArea,
     });
   }
+  return sources;
+}
+
+/**
+ * The shared core of buildLightProfile/buildForestLightProfile: builds a
+ * shadow-map light profile from an already-collected, already-world-space
+ * source list. Exposed separately so a forest can merge sources from
+ * every living tree into one shared index (a canopy 3m to the west casts
+ * exactly the same kind of shade as a canopy 3m further out on the same
+ * tree -- there is nothing tree-specific about how a source occludes
+ * light once it's a `{position, area}` pair in world space), while a lone
+ * tree keeps using its own single-tree sources unchanged.
+ */
+export function buildLightProfileFromSources(sources: readonly ShadingSource[], params: SimulationParams): LightProfile {
+  const sunDir = sunDirection(params);
 
   const directIndex = buildColumnIndex(sources, sunDir);
   const diffuseIndices = DIFFUSE_DIRECTIONS.map((dir) => buildColumnIndex(sources, dir));
@@ -213,4 +247,31 @@ export function buildLightProfile(segments: readonly BranchSegment[], params: Si
       return exposure;
     },
   };
+}
+
+/** A single tree's own light profile, built from its own segments alone
+ * (its local coordinates, base at the origin -- identical behavior to
+ * before collectShadingSources/buildLightProfileFromSources were pulled
+ * out of this function's body). */
+export function buildLightProfile(segments: readonly BranchSegment[], params: SimulationParams): LightProfile {
+  return buildLightProfileFromSources(collectShadingSources(segments), params);
+}
+
+/**
+ * A forest-wide light profile: every living tree's own canopy, translated
+ * into one shared world-space coordinate system by its own planting
+ * position, cast into a single shadow-map index -- so a tree standing in
+ * a taller neighbor's shadow measures real reduced exposure, the same
+ * Beer-Lambert mechanism a lone tree already uses for its own interior
+ * self-shading, just no longer restricted to one tree's own foliage.
+ * Sun direction is a shared *environment* parameter (params.sunZenithAngle/
+ * sunAzimuth) for the whole forest, not a per-tree trait, which is why
+ * this takes one shared `params` rather than each tree's own.
+ */
+export function buildForestLightProfile(
+  trees: readonly { segments: readonly BranchSegment[]; offset: readonly [number, number] }[],
+  params: SimulationParams
+): LightProfile {
+  const sources = trees.flatMap((t) => collectShadingSources(t.segments, t.offset));
+  return buildLightProfileFromSources(sources, params);
 }

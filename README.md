@@ -459,6 +459,13 @@ literature/reasoning behind each.
 
 ## Adjusting parameters in the UI
 
+The mode toggle at the top of the panel ("Single tree" / "Forest") switches
+between growing one tree (the original mode) and growing a whole forest
+population -- see the "Forest simulation" section below. Both modes share
+the same "Species & environment parameters" panel, playback controls, and
+renderer options; only the top "Simulation"/"Forest" section above it and
+what the scrubber/metrics line show change with the mode.
+
 The "Species & environment parameters" panel exposes a curated subset of
 `SimulationParams` as sliders -- the ones a real environment or species
 would plausibly vary, rather than every internal tuning constant (see
@@ -600,6 +607,103 @@ externally-observable-facts spirit:
   calculation (see `computeAnchorageReport` in `src/sim/pipeModel.ts`),
   not a replay of the growth-time formula -- the same non-tautological
   spirit as `allometry.test.ts`'s shoot mechanical-stress check.
+
+`tests/forest.test.ts` covers the forest feature (`src/sim/forest.ts`):
+
+- a lone tree in a "forest of one" (max one tree, reproduction off) grows
+  byte-for-byte identically, year by year, to a standalone single-tree
+  `runSimulation` call given the same (forest-minted) seed -- the forest
+  engine is a strict superset of the single-tree one, never a different
+  code path for the ordinary case;
+- `buildRootResourceProfile` (unit-level): a lone tree's own roots never
+  throttle themselves however dense, two trees' overlapping root systems
+  measurably throttle each other exactly at the point of overlap, and a
+  query far from every root system sees no competition at all;
+- reproduction actually propagates a population: a forest starts with
+  exactly one tree at the origin and, given enough years, grows into a
+  real multi-tree population without ever exceeding the configured
+  tree-count cap; scattered offspring land away from their parent, are
+  younger than the founder at the same forest year, and every currently-
+  alive tree is still a well-formed tree graph;
+- light competition measurably suppresses growth: every offspring tree in
+  a densely-packed stand ends up shorter and carrying less leaf area than
+  the same individual (same minted seed) growing alone for the same
+  number of years -- not just plausible-looking, an actual paired
+  same-seed comparison;
+- light-starved trees really do die and get removed: a densely-packed
+  population produces at least one whole-tree death, the dead tree's id
+  disappears from the living list, and its death-log record carries sane
+  final metrics;
+- determinism: a fixed forest seed reproduces the same population (ids,
+  positions, sizes) run to run.
+
+## Forest simulation
+
+"Forest" mode (the mode toggle at the top of the controls panel) grows a
+*population* of trees from a single founder, all sharing the one species
+defined by the "Species & environment parameters" panel below it --
+reproduction makes more individuals of the same species, not new species.
+See `src/model/types.ts`'s own module doc (the "Forest simulation"
+section) and `src/sim/forest.ts` for the full design reasoning; in brief:
+
+- **Every tree keeps the full single-tree model.** A forest tree is grown
+  by exactly the same `stepYear`/`growRoots` engine a lone tree uses --
+  full mechanical/root system, full per-year state -- just at its own
+  `(x, z)` planting position in a shared world. This is a deliberate scale
+  tradeoff (see the "Forest scale" choice below): the forest stays a
+  *small stand* (`maxTrees`, default 25) rather than approximating a much
+  larger one with simplified trees.
+- **Light competition** extends the single-tree shadow-casting light
+  model (`buildForestLightProfile` in `src/sim/light.ts`) to every living
+  tree at once: each tree's canopy is translated into one shared
+  world-space shadow map, so a tree standing in a taller neighbor's
+  shadow measures real reduced exposure -- the same Beer-Lambert
+  mechanism a lone tree already uses for its own interior self-shading,
+  just no longer restricted to one tree's own foliage.
+- **Root-space competition** (`src/sim/rootCompetition.ts`) is the
+  below-ground, isotropic analogue: every living tree's absorptive root
+  area is binned into a shared horizontal grid, and a root's local
+  resource share is throttled by an `exp(-k * competingDensity)` law (the
+  same Beer-Lambert shape as light, just without a preferred direction)
+  driven only by *other* trees' roots sharing the same soil patch -- a
+  lone tree's own roots, however dense, never self-throttle.
+- **Reproduction and scattering**: once a tree's own height passes
+  `maturityHeight`, it rolls each year for a seed-dispersal event
+  (`reproductionProbability`); each seed lands at a random point within
+  `seedDispersalRadius` of the parent and only actually germinates into a
+  new tree if it clears `minTreeSpacing` from every existing tree and the
+  ground-level light there clears `germinationLightThreshold` -- real
+  seedlings establish poorly directly under a closed canopy -- and while
+  the forest is under its `maxTrees` cap.
+- **Whole-tree light-starvation death**: a tree whose entire canopy (not
+  just its lowest, already self-pruning branches) stays at or below
+  `lightStarvationThreshold` mean exposure for `lightStarvationYears`
+  running faces a real, ramped chance of dying outright each subsequent
+  year (the same asymptotic-hazard shape used throughout `growth.ts`,
+  never a hard single-year cutoff) and being permanently removed from the
+  forest -- its full segment graph is dropped, kept only as a small
+  "memorial" record (id, position, when it died, final size) in the
+  forest's death log, shown in the UI under the scrubber whenever the
+  currently-viewed forest year has any recorded deaths.
+- **A forest-year snapshot is self-contained**, not a nested per-tree
+  sub-history: it keeps every currently-alive tree's own *current*
+  `TreeState` (everything a scrub needs), not that tree's own full
+  per-year growth history nested inside every single forest year --
+  avoiding an O(years x trees x tree-age) memory blowup a naive nesting
+  would cause.
+- **What isn't (yet) implemented**: forest history download/upload
+  (single-tree history save/load exists; a forest run currently only
+  lives for the session that grew it) and per-tree species variation
+  (every tree in a forest is the same species/params as the founder,
+  cloned exactly, not mutated across generations).
+
+The renderer's forest support (`TreeDebugRenderer.setForestState`/
+`frameForest` in `src/render/debugRenderer.ts`) draws every visible
+tree's segments/leaves into one shared instanced-mesh scene (each
+translated by its own planting position) and frames the camera to the
+whole population's bounding footprint rather than one tree centered at
+the origin; hovering shows which tree (`tree #N`) a segment/leaf belongs
+to whenever more than one tree is on screen.
 
 ## Renderer
 
