@@ -634,6 +634,15 @@ externally-observable-facts spirit:
   population produces at least one whole-tree death, the dead tree's id
   disappears from the living list, and its death-log record carries sane
   final metrics;
+- equilibrium freezing: a long-lived tree (a pinned seed already confirmed
+  to reach a real plateau) actually freezes, its `TreeState` is the exact
+  same object reference many years later (not just an equal-looking
+  recomputation -- direct evidence stepYear/growRoots were skipped, not
+  just that nothing happened to change the result), and its final
+  height/DBH still matches a continuously-simulated equivalent grown from
+  the same minted seed; a longer multi-tree run stays a well-formed,
+  correctly-capped population regardless of which individual trees have
+  frozen;
 - determinism: a fixed forest seed reproduces the same population (ids,
   positions, sizes) run to run.
 
@@ -651,8 +660,43 @@ section) and `src/sim/forest.ts` for the full design reasoning; in brief:
   full mechanical/root system, full per-year state -- just at its own
   `(x, z)` planting position in a shared world. This is a deliberate scale
   tradeoff (see the "Forest scale" choice below): the forest stays a
-  *small stand* (`maxTrees`, default 25) rather than approximating a much
-  larger one with simplified trees.
+  *small stand* (`maxTrees`, default 25, up to 150 from the UI) rather
+  than approximating a much larger one with simplified trees.
+- **Equilibrium freezing** (`ForestTree.frozen`/`plateauYears`, see their
+  own doc and `isStableYear`/`EQUILIBRIUM_YEARS` in `src/sim/forest.ts`)
+  is what actually makes a *long* forest run (hundreds of years, many
+  trees) tractable: once a tree's own segment/bud count and height/DBH
+  have stayed exactly stable for several consecutive years -- a real,
+  empirically-confirmed signature of having reached its hydraulic-
+  limitation plateau, not just a guess -- its own `stepYear`/`growRoots`
+  computation is skipped entirely every subsequent year (its `TreeState`
+  is reused by reference, not recomputed) rather than re-deriving a
+  result that would come out the same. A frozen tree still fully counts
+  toward the forest-wide light/root profiles every year (its canopy/roots
+  don't stop existing, just changing), and unfreezes itself the moment
+  its own light environment moves enough in *either* direction to
+  actually matter again -- it starts genuinely struggling (resumes real
+  computation so its decline is modeled properly, not left invisibly
+  frozen under just a coarse death-hazard check) or a shading neighbor
+  dies and opens the canopy back up (real gap-phase release). The one
+  accepted approximation: a frozen tree's own dead-wood abscission (a
+  background housekeeping process, not growth) pauses along with
+  everything else until it unfreezes.
+- **Generation runs in a Web Worker and streams progress**
+  (`src/sim/forestWorker.ts`, loaded via Vite's `?worker&inline` so the
+  single-HTML-file build stays intact) rather than blocking the page for
+  the whole run: the UI's live view follows along as forest-years arrive
+  (unless the user has manually scrubbed elsewhere), and a Cancel button
+  in the status bar can stop generation early -- whatever's streamed in
+  by then stays fully usable, just shorter than requested. `ForestRunner`
+  (also in `src/sim/forest.ts`) is the incremental engine behind both this
+  and the synchronous `runForestSimulation` tests use -- one `stepOne()`
+  call per year either way, so there's exactly one code path to keep
+  correct. Progress messages batch whatever years were computed since the
+  last one (never the whole accumulated history, which would be an O(n^2)
+  cost over a long run) and are naturally throttled to roughly a message
+  every ~120ms of worker time, so a very long run doesn't turn into
+  thousands of tiny postMessage calls.
 - **Light competition** extends the single-tree shadow-casting light
   model (`buildForestLightProfile` in `src/sim/light.ts`) to every living
   tree at once: each tree's canopy is translated into one shared
@@ -700,6 +744,22 @@ section) and `src/sim/forest.ts` for the full design reasoning; in brief:
   lives for the session that grew it) and per-tree species variation
   (every tree in a forest is the same species/params as the founder,
   cloned exactly, not mutated across generations).
+- **Actual achievable scale, honestly**: equilibrium freezing and the
+  Web Worker both measurably help (freezing skips real per-tree
+  computation once a tree plateaus; the worker keeps the page responsive
+  and cancelable throughout), but the forest-wide light/root profiles are
+  still rebuilt every year from *every currently-alive tree's* segments,
+  frozen or not -- so per-year cost still scales with concurrent tree
+  count, which freezing doesn't reduce. In this project's own
+  (unusually resource-constrained) sandboxed test environment, generation
+  became unreliable somewhere in the neighborhood of a dozen-plus
+  concurrently-growing trees over a long run, even though the same
+  computation completed correctly and reasonably quickly (tens of
+  seconds) when run directly outside a browser -- a real user's own
+  browser, with a more typical amount of available memory/CPU, should
+  comfortably handle noticeably larger forests than that; `maxTrees` up
+  to 150 is offered from the UI, not a promise every value that high runs
+  smoothly everywhere.
 
 The renderer's forest support (`TreeDebugRenderer.setForestState`/
 `frameForest` in `src/render/debugRenderer.ts`) draws every visible
@@ -715,10 +775,14 @@ Once a forest has been grown, "🚶 Walk through forest" switches to an
 immersive first-person view (`TreeDebugRenderer.enterWalkMode`/
 `exitWalkMode`): the whole analytic UI (controls panel, scrubber, hover
 tooltip) hides in favor of a crosshair and a small "Exit walking mode"
-hint, the orbit camera is replaced by **WASD** movement -- **W/S** walk
-forward/backward, **A/D turn** left/right (a classic turn-in-place
-scheme, not strafing) -- plus free **mouse look** (pointer-locked on
-entry) for yaw/pitch, foliage switches to "photo" mode (real leaf-shaped
+hint, the orbit camera is replaced by standard six-directional **WASD**
+movement -- **W/S** walk forward/backward, **A/D** strafe left/right,
+all relative to the current look direction -- plus free **mouse look**
+(pointer-locked on entry, yaw and pitch; keyboard never rotates the view)
+at a fixed eye height (an average adult standing height, 1.7m -- every
+distance in this simulation is already real meters, so this reads
+directly to scale next to a grown tree with no separate scale factor
+needed), foliage switches to "photo" mode (real leaf-shaped
 shadows read far better up close than the debug point-cloud/skeleton
 modes), and the ground swaps from the analytic translucent-green disc to
 an opaque, tileable dirt texture (`makeDirtTexture`, procedurally drawn

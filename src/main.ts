@@ -2,7 +2,8 @@ import type { ForestHistory, SimulationHistory, SimulationParams } from './model
 import { defaultParams } from './sim/params';
 import { deserializeHistory, runSimulation, serializeHistory } from './sim/simulate';
 import { deserializeParamsPreset, serializeParamsPreset } from './sim/params';
-import { runForestSimulation } from './sim/forest';
+import type { ForestWorkerOutMessage, ForestWorkerStartMessage } from './sim/forestWorker';
+import ForestWorkerCtor from './sim/forestWorker?worker&inline';
 import { defaultForestParams } from './sim/forestParams';
 import { sunDirection } from './sim/sun';
 import { TreeDebugRenderer, COLOR_MODES, type ColorModeId, type HoverInfo } from './render/debugRenderer';
@@ -44,6 +45,8 @@ const forestReproductionInput = document.getElementById('forest-reproduction-inp
 const forestDispersalInput = document.getElementById('forest-dispersal-input') as HTMLInputElement;
 const forestSimulateBtn = document.getElementById('forest-simulate-btn') as HTMLButtonElement;
 const deathLog = document.getElementById('death-log') as HTMLDivElement;
+const statusText = document.getElementById('status-text') as HTMLSpanElement;
+const statusCancelBtn = document.getElementById('status-cancel-btn') as HTMLButtonElement;
 const walkBtn = document.getElementById('walk-btn') as HTMLButtonElement;
 const exitWalkBtn = document.getElementById('exit-walk-btn') as HTMLButtonElement;
 const walkOverlay = document.getElementById('walk-overlay') as HTMLDivElement;
@@ -180,15 +183,31 @@ let viewMode: ViewMode = 'single';
 let history: SimulationHistory | null = null;
 let forestHistory: ForestHistory | null = null;
 let playTimer: number | null = null;
+/** Set while a forest generation is streaming in from forestWorker.ts;
+ * calling it cancels that generation (the status bar's own Cancel button,
+ * and starting a new generation while one is already running, both use
+ * this). */
+let cancelForestGeneration: (() => void) | null = null;
+/** Whether the view should keep jumping to the newest forest-year as
+ * progress messages stream in (a live "watch it grow" preview) -- turned
+ * off the moment the user manually touches the scrubber during
+ * generation, so scrubbing back to look at an earlier year doesn't get
+ * yanked forward again on the next progress message. Reset to true each
+ * time a new generation starts. */
+let followLiveForestGrowth = true;
 
-function setStatus(text: string | null): void {
+function setStatus(text: string | null, cancelable = false): void {
   if (text === null) {
     statusEl.style.display = 'none';
+    statusCancelBtn.style.display = 'none';
   } else {
-    statusEl.style.display = 'block';
-    statusEl.textContent = text;
+    statusEl.style.display = 'flex';
+    statusText.textContent = text;
+    statusCancelBtn.style.display = cancelable ? '' : 'none';
   }
 }
+
+statusCancelBtn.addEventListener('click', () => cancelForestGeneration?.());
 
 function updateLegend(): void {
   const mode = COLOR_MODES.find((m) => m.id === colorModeSelect.value) ?? COLOR_MODES[0];
@@ -259,17 +278,16 @@ function loadHistory(h: SimulationHistory): void {
   showAtIndex(h.states.length - 1);
 }
 
-function loadForestHistory(h: ForestHistory): void {
-  forestHistory = h;
-  scrubber.max = String(h.states.length - 1);
-  scrubber.value = String(h.states.length - 1);
-  const lastIndex = h.states.length - 1;
+/** Points the camera at the whole current forest population and syncs the
+ * sun direction -- called once generation finishes, and also on the
+ * user's very first progress update (so it doesn't stay pointed at
+ * wherever the camera happened to be before "Grow forest" was clicked
+ * while a long generation streams in). */
+function frameCurrentForest(h: ForestHistory, atIndex: number): void {
   renderer.frameForest(
-    h.states[lastIndex].trees.map((t) => ({ offset: t.position, height: t.state.metrics.height, crownWidth: t.state.metrics.crownWidth }))
+    h.states[atIndex].trees.map((t) => ({ offset: t.position, height: t.state.metrics.height, crownWidth: t.state.metrics.crownWidth }))
   );
   renderer.setSunDirection(sunDirection(h.params));
-  showAtIndex(lastIndex);
-  walkBtn.disabled = false;
 }
 
 async function simulate(params: SimulationParams, years: number): Promise<void> {
@@ -282,20 +300,106 @@ async function simulate(params: SimulationParams, years: number): Promise<void> 
   setStatus(null);
 }
 
+/**
+ * Runs a forest generation in a background Web Worker (forestWorker.ts)
+ * so a long run (now practical thanks to equilibrium freezing -- see
+ * ForestTree.frozen) never blocks the page, streaming progress back one
+ * or more forest-years at a time (see ForestWorkerOutMessage) instead of
+ * making the caller wait for the whole thing to finish. The view follows
+ * along live (growing the scrubber, showing the newest year) unless the
+ * user has manually scrubbed elsewhere, and a Cancel button in the status
+ * bar can stop generation early -- whatever years have streamed in by
+ * then stay fully usable, just shorter than requested.
+ */
 async function simulateForest(): Promise<void> {
-  const years = Math.max(1, Math.min(300, Number(forestYearsInput.value) || defaultForestParams.years));
+  const years = Math.max(1, Math.min(3000, Number(forestYearsInput.value) || defaultForestParams.years));
   const forestSeed = Math.max(0, Number(forestSeedInput.value) || 0);
-  const maxTrees = Math.max(1, Math.min(60, Number(forestMaxTreesInput.value) || defaultForestParams.maxTrees));
+  const maxTrees = Math.max(1, Math.min(150, Number(forestMaxTreesInput.value) || defaultForestParams.maxTrees));
   const reproductionProbability = Math.max(0, Math.min(1, Number(forestReproductionInput.value) || 0));
   const seedDispersalRadius = Math.max(0.5, Number(forestDispersalInput.value) || defaultForestParams.seedDispersalRadius);
   const forestParams = { ...defaultForestParams, years, maxTrees, reproductionProbability, seedDispersalRadius };
   const params = currentEffectiveParams();
 
-  setStatus(`Growing forest for ${years} years…`);
-  await new Promise((r) => setTimeout(r, 20));
-  const h = runForestSimulation(params, forestParams, forestSeed);
-  loadForestHistory(h);
-  setStatus(null);
+  // Starting a new generation always supersedes one already in flight.
+  cancelForestGeneration?.();
+
+  forestHistory = { formatVersion: 1, params, forestParams, forestSeed, states: [] };
+  followLiveForestGrowth = true;
+  walkBtn.disabled = true;
+  setStatus(`Growing forest… (0/${years} years, 1 tree)`, true);
+
+  const worker = new ForestWorkerCtor();
+  let framedYet = false;
+  // Re-rendering the whole forest scene (showAtIndex -> setForestState,
+  // which rebuilds every instanced mesh from scratch) is real, non-trivial
+  // work once a forest has any size to it -- doing that on *every*
+  // progress message for a long generation would pile rendering cost on
+  // top of the worker's own computation and can make the tab unresponsive
+  // for no real benefit (a human can't perceive the difference between a
+  // live view updating every 120ms of worker time vs. a few times a
+  // second). This throttles the live-follow re-render independently of
+  // how often progress messages themselves arrive; the scrubber max and
+  // status text above still update on every message, since those are cheap.
+  let lastLiveRenderTime = 0;
+  const LIVE_RENDER_MIN_INTERVAL_MS = 500;
+
+  await new Promise<void>((resolve) => {
+    const finish = (): void => {
+      cancelForestGeneration = null;
+      worker.terminate();
+      resolve();
+    };
+    cancelForestGeneration = (): void => {
+      setStatus(null);
+      finish();
+    };
+
+    worker.onmessage = (e: MessageEvent<ForestWorkerOutMessage>) => {
+      const msg = e.data;
+      if (msg.type === 'progress') {
+        const h = forestHistory!;
+        for (const snap of msg.snapshots) h.states.push(snap);
+        const lastIndex = h.states.length - 1;
+        const latest = h.states[lastIndex];
+        scrubber.max = String(lastIndex);
+        setStatus(`Growing forest… (${latest.forestYear}/${msg.totalYears} years, ${latest.trees.length} trees)`, true);
+        if (!framedYet) {
+          frameCurrentForest(h, lastIndex);
+          framedYet = true;
+        }
+        if (latest.trees.length > 0) walkBtn.disabled = false;
+        if (followLiveForestGrowth) {
+          scrubber.value = String(lastIndex);
+          const now = performance.now();
+          if (now - lastLiveRenderTime >= LIVE_RENDER_MIN_INTERVAL_MS) {
+            showAtIndex(lastIndex);
+            lastLiveRenderTime = now;
+          }
+        }
+      } else if (msg.type === 'done') {
+        const h = forestHistory!;
+        const lastIndex = h.states.length - 1;
+        frameCurrentForest(h, lastIndex);
+        scrubber.value = String(lastIndex);
+        followLiveForestGrowth = true;
+        showAtIndex(lastIndex);
+        setStatus(null);
+        finish();
+      } else if (msg.type === 'error') {
+        alert(`Forest generation failed: ${msg.message}`);
+        setStatus(null);
+        finish();
+      }
+    };
+    worker.onerror = (err) => {
+      alert(`Forest generation failed: ${err.message}`);
+      setStatus(null);
+      finish();
+    };
+
+    const start: ForestWorkerStartMessage = { type: 'start', params, forestParams, forestSeed };
+    worker.postMessage(start);
+  });
 }
 
 simulateBtn.addEventListener('click', () => {
@@ -379,6 +483,7 @@ uploadInput.addEventListener('change', () => {
 
 scrubber.addEventListener('input', () => {
   stopPlayback();
+  followLiveForestGrowth = false;
   showAtIndex(Number(scrubber.value));
 });
 

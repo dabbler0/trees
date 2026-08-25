@@ -602,6 +602,43 @@ export interface ForestTree {
    * ForestParams.lightStarvationYears. Resets to 0 the moment exposure
    * recovers above threshold in any given year. */
   starvedYears: number;
+  /** Consecutive forest-years (so far) this tree's own segment/bud count
+   * and height/DBH have changed by less than a small tolerance -- see
+   * EQUILIBRIUM_YEARS in forest.ts. Once this reaches that threshold the
+   * tree is `frozen` (below) and stops paying for its own full growth
+   * simulation; resets to 0 whenever it's actually growing (or the
+   * moment it unfreezes). */
+  plateauYears: number;
+  /** True once this tree has plateaued long enough that its own
+   * stepYear/growRoots computation is skipped entirely each forest year
+   * -- a real performance win for a large, long-lived forest, since most
+   * of a mature tree's per-year cost (bud senescence rolls, the pipe
+   * model, hydraulic resistance, metrics/leaf placement) has nothing left
+   * to meaningfully change once it's reached its hydraulic-limitation
+   * plateau. A frozen tree's `state` is simply carried forward unchanged
+   * (the same object reference, not recomputed) -- it still counts
+   * fully toward the forest-wide light/root-competition profiles every
+   * year (so it keeps shading/contesting its neighbors exactly as
+   * before) and its own mean canopy exposure is still re-checked against
+   * lightStarvationThreshold every year (so a frozen tree that a *new*
+   * neighbor later grows up and shades out still starts genuinely
+   * declining/dying, not silently immune just because it stopped being
+   * actively re-simulated), and unfreezes the other direction too if a
+   * neighbor's *removal* (death) substantially brightens it back up (see
+   * lastMeanExposure) -- see forest.ts's own module doc. A known,
+   * accepted approximation: a frozen tree's own dead-wood abscission
+   * (clearing long-dead twigs, a background process that can keep
+   * running even in an otherwise-plateaued tree) is paused right along
+   * with everything else until it unfreezes, rather than tracked
+   * separately -- a real but visually minor thing to defer. */
+  frozen: boolean;
+  /** This tree's own mean canopy light exposure ([0, 1], same
+   * Beer-Lambert scale as a bud's own lightExposure) as of the last
+   * forest-year it was checked -- tracked for every tree, frozen or not,
+   * purely so a frozen tree can detect a substantial *improvement* (a
+   * shading neighbor dying and opening up the canopy) and resume real
+   * growth simulation in response, not just a decline into starvation. */
+  lastMeanExposure: number;
   /** This tree's own current TreeState (its state at its own age =
    * currentForestYear - plantedYear). */
   state: TreeState;

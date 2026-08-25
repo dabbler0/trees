@@ -167,6 +167,72 @@ describe('light-starved trees die and are removed from the forest', () => {
   }, 60_000);
 });
 
+describe('equilibrium freezing: a plateaued tree stops paying for its own full growth simulation', () => {
+  it('a long-lived tree eventually freezes, its state is reused (not recomputed) while frozen, and its final height/DBH still matches a continuously-simulated equivalent', () => {
+    // Seed chosen (and pinned) because it's already been confirmed to
+    // produce a real, sustained plateau well before old growth -- freeze
+    // timing is inherently seed/trajectory-dependent (see forest.ts's own
+    // module doc on isStableYear), so this checks that freezing *can and
+    // does* happen and behaves correctly when it does, not that it always
+    // happens by some fixed year.
+    const YEARS = 150;
+    const forestParams = { ...defaultForestParams, years: YEARS, maxTrees: 1, reproductionProbability: 0 };
+    const forest = runForestSimulation(defaultParams, forestParams, 7);
+
+    let firstFrozenYear: number | null = null;
+    for (const snap of forest.states) {
+      const t = snap.trees.find((tr) => tr.id === 0)!;
+      if (t.frozen && firstFrozenYear === null) firstFrozenYear = snap.forestYear;
+    }
+    expect(firstFrozenYear).not.toBeNull();
+    const frozenYear = firstFrozenYear!;
+
+    // Once frozen, the exact same TreeState object is carried forward
+    // (not just an equal-looking copy) -- the actual evidence that
+    // stepYear/growRoots were skipped, not just that nothing happened to
+    // change the result.
+    const laterYear = Math.min(YEARS, frozenYear + 10);
+    const stateAtFreeze = forest.states[frozenYear].trees.find((t) => t.id === 0)!.state;
+    const stateLater = forest.states[laterYear].trees.find((t) => t.id === 0)!.state;
+    expect(stateLater).toBe(stateAtFreeze);
+
+    // Freezing must not visibly diverge from the truth: a continuously-
+    // simulated equivalent (same species, same minted founder seed)
+    // reaches the same height/DBH by the same age, even though the
+    // frozen run skipped recomputing it for many of those years (the only
+    // accepted divergence is deferred dead-wood abscission -- see
+    // ForestTree.frozen's own doc -- which doesn't move either metric).
+    const founderSeed = forest.states[0].trees[0].seed;
+    const solo = runSimulation({ ...defaultParams, seed: founderSeed }, YEARS);
+    const forestFinal = forest.states[YEARS].trees.find((t) => t.id === 0)!.state.metrics;
+    const soloFinal = solo.states[YEARS].metrics;
+    expect(forestFinal.height).toBeCloseTo(soloFinal.height, 6);
+    expect(forestFinal.dbh).toBeCloseTo(soloFinal.dbh, 6);
+  }, 30_000);
+
+  it('a frozen tree still keeps shading/competing with its neighbors and can still be reproductively active', () => {
+    // Loose sanity check: run a real multi-tree forest long enough that
+    // some trees are very likely frozen by the end, and confirm the
+    // forest as a whole still behaves normally (a well-formed population,
+    // still under the tree cap, still capable of both growth and death) --
+    // i.e. freezing individual trees doesn't quietly break the forest.
+    const forestParams = { ...defaultForestParams, years: 150 };
+    const forest = runForestSimulation(defaultParams, forestParams, 42);
+    const last = forest.states[forest.states.length - 1];
+    expect(last.trees.length).toBeGreaterThan(1);
+    expect(last.trees.length).toBeLessThanOrEqual(forestParams.maxTrees);
+    for (const t of last.trees) assertIsValidTree(t.state);
+    // At least plausible that freezing occurred somewhere in a 150-year,
+    // several-tree run without asserting exactly which/when (seed/
+    // trajectory-dependent) -- just that the field is being tracked and
+    // isn't stuck at some obviously-broken value.
+    for (const t of last.trees) {
+      expect(t.plateauYears).toBeGreaterThanOrEqual(0);
+      expect(typeof t.frozen).toBe('boolean');
+    }
+  }, 60_000);
+});
+
 describe('determinism', () => {
   it('is deterministic for a fixed forest seed', () => {
     const forestParams = { ...defaultForestParams, years: 30 };

@@ -144,6 +144,8 @@
         top: 12px;
         z-index: 5;
         display: none;
+        align-items: center;
+        gap: 10px;
         background: rgba(0, 0, 0, 0.75);
         color: white;
         padding: 8px 14px;
@@ -273,7 +275,10 @@
   <body>
     <div id="app">
       <div id="canvas-container"></div>
-      <div id="status">Simulating...</div>
+      <div id="status">
+        <span id="status-text">Simulating...</span>
+        <button id="status-cancel-btn" class="secondary" style="display: none">Cancel</button>
+      </div>
 
       <div id="controls" class="panel">
         <h1>🌳 Tree Growth Simulator</h1>
@@ -309,7 +314,7 @@
           <h2>Forest</h2>
           <div class="row">
             <label for="forest-years-input">Years to grow</label>
-            <input id="forest-years-input" type="number" min="1" max="300" value="120" />
+            <input id="forest-years-input" type="number" min="1" max="3000" value="120" />
           </div>
           <div class="row">
             <label for="forest-seed-input">Random seed</label>
@@ -317,7 +322,7 @@
           </div>
           <div class="row">
             <label for="forest-max-trees-input">Max trees</label>
-            <input id="forest-max-trees-input" type="number" min="1" max="60" value="25" />
+            <input id="forest-max-trees-input" type="number" min="1" max="150" value="25" />
           </div>
           <div class="row">
             <label for="forest-reproduction-input">Reproduction chance/yr</label>
@@ -393,7 +398,7 @@
 
       <div id="walk-crosshair" style="display: none"></div>
       <div id="walk-overlay" class="panel" style="display: none">
-        <div>W/S walk &nbsp;·&nbsp; A/D turn &nbsp;·&nbsp; mouse look</div>
+        <div>WASD move &nbsp;·&nbsp; mouse look</div>
         <div class="row">
           <button id="exit-walk-btn" class="secondary">Exit walking mode (Esc)</button>
         </div>

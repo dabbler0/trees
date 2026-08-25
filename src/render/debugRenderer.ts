@@ -170,13 +170,21 @@ const GROUND_SIZE = 300;
  * of makeDirtTexture's pattern reads as once tiled. */
 const DIRT_TILE_SIZE = 3;
 
-/** Eye height above the (flat) ground while walking, meters. */
+/** Eye height above the (flat) ground while walking, meters -- an average
+ * adult standing eye height. Every distance in this simulation (tree
+ * height, DBH, root spread, ...) is already real meters, so this reads
+ * directly to-scale against a grown tree with no separate scale factor
+ * needed: a person this tall standing next to, say, a 15m mature crown is
+ * exactly as small a fraction of it as a real person would be. */
 const WALK_EYE_HEIGHT = 1.7;
+/** How close the near clip plane sits to the eye while walking, meters --
+ * deliberately much closer than the orbit camera's own near plane (which
+ * is sized to whatever the *whole scene* being framed measures, often
+ * several meters for a large forest, and would clip the ground and any
+ * nearby trunk at ordinary walking distances). */
+const WALK_NEAR_CLIP = 0.05;
 /** Walking speed, meters/second. */
 const WALK_MOVE_SPEED = 4.5;
-/** A/D keyboard turn rate, radians/second -- see enterWalkMode's own doc
- * for why A/D turns the view rather than strafing. */
-const WALK_TURN_SPEED = 1.8;
 /** Mouse-look sensitivity, radians of yaw/pitch per pixel of mouse movement. */
 const WALK_MOUSE_SENSITIVITY = 0.0022;
 /** How close to straight up/down mouse-look pitch is allowed to get,
@@ -286,9 +294,15 @@ export class TreeDebugRenderer {
   private walkPitch = 0;
   private walkPosition = new THREE.Vector3(0, WALK_EYE_HEIGHT, 0);
   private walkLastTime = 0;
-  /** Snapshot to restore on exit: the orbit camera pose and color mode
-   * walking mode temporarily overrides. */
-  private preWalk: { colorMode: ColorModeId; cameraPosition: THREE.Vector3; controlsTarget: THREE.Vector3 } | null = null;
+  /** Snapshot to restore on exit: the orbit camera pose/clip planes and
+   * color mode walking mode temporarily overrides. */
+  private preWalk: {
+    colorMode: ColorModeId;
+    cameraPosition: THREE.Vector3;
+    controlsTarget: THREE.Vector3;
+    near: number;
+    far: number;
+  } | null = null;
 
   constructor(private container: HTMLElement) {
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.05, 2000);
@@ -476,14 +490,16 @@ export class TreeDebugRenderer {
    * texture (there's no root system to reveal from ground level, and a
    * see-through ground would look wrong up close).
    *
-   * Controls: W/S walk forward/backward along the current facing
-   * direction; A/D *turn* left/right (no strafing -- this is a classic
-   * turn-in-place scheme, not a modern six-directional FPS one) at a
-   * fixed angular rate; mouse movement (once pointer-locked, which this
-   * requests immediately -- must be called from a user-gesture handler,
-   * e.g. a button's click listener, for the browser to grant it) looks
-   * around freely in both yaw and pitch. Movement stays on the flat
-   * ground plane at a fixed eye height; there's no collision detection
+   * Controls: W/S walk forward/backward, A/D strafe left/right, all
+   * relative to the current look direction (a standard six-directional
+   * FPS scheme); mouse movement (once pointer-locked, which this requests
+   * immediately -- must be called from a user-gesture handler, e.g. a
+   * button's click listener, for the browser to grant it) looks around
+   * freely in both yaw and pitch -- turning is mouse-only, keyboard never
+   * rotates the view. Movement stays on the flat ground plane at a fixed
+   * eye height (WALK_EYE_HEIGHT -- a real average adult standing height,
+   * directly to scale against a grown tree since every distance in this
+   * simulation is already real meters); there's no collision detection
    * against trees or terrain relief (the ground is flat), so walking
    * through a trunk is possible -- an acceptable simplification for a
    * debug/showcase view rather than a game.
@@ -503,9 +519,21 @@ export class TreeDebugRenderer {
       colorMode: this.options.colorMode,
       cameraPosition: this.camera.position.clone(),
       controlsTarget: this.controls.target.clone(),
+      near: this.camera.near,
+      far: this.camera.far,
     };
     this.controls.enabled = false;
     this.setOptions({ colorMode: 'photo' });
+
+    // The orbit camera's near/far planes are sized to whatever the whole
+    // *scene* being framed measures (see applyFraming) -- for a large
+    // forest that can mean a near plane a meter or more out, which would
+    // clip the ground and any nearby trunk at ordinary walking distances.
+    // A fixed, close-up pair is what actually keeps things looking
+    // correctly to-scale once the camera is down at human eye height.
+    this.camera.near = WALK_NEAR_CLIP;
+    this.camera.far = Math.max(this.camera.far, GROUND_SIZE * 2);
+    this.camera.updateProjectionMatrix();
 
     if (!this.groundMaterialDirt) {
       const dirtTexture = makeDirtTexture();
@@ -562,6 +590,9 @@ export class TreeDebugRenderer {
       this.setOptions({ colorMode: this.preWalk.colorMode });
       this.camera.position.copy(this.preWalk.cameraPosition);
       this.controls.target.copy(this.preWalk.controlsTarget);
+      this.camera.near = this.preWalk.near;
+      this.camera.far = this.preWalk.far;
+      this.camera.updateProjectionMatrix();
       this.preWalk = null;
     }
     this.controls.enabled = true;
@@ -598,17 +629,21 @@ export class TreeDebugRenderer {
     const dt = this.walkLastTime ? Math.min(0.1, (time - this.walkLastTime) / 1000) : 0;
     this.walkLastTime = time;
 
-    if (this.walkKeysDown.has('KeyA')) this.walkYaw += WALK_TURN_SPEED * dt;
-    if (this.walkKeysDown.has('KeyD')) this.walkYaw -= WALK_TURN_SPEED * dt;
-
     this.camera.quaternion.setFromEuler(new THREE.Euler(this.walkPitch, this.walkYaw, 0, 'YXZ'));
 
-    if (this.walkKeysDown.has('KeyW') || this.walkKeysDown.has('KeyS')) {
+    const moving =
+      this.walkKeysDown.has('KeyW') || this.walkKeysDown.has('KeyS') || this.walkKeysDown.has('KeyA') || this.walkKeysDown.has('KeyD');
+    if (moving) {
       const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
       forward.y = 0;
       forward.normalize();
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+      right.y = 0;
+      right.normalize();
       if (this.walkKeysDown.has('KeyW')) this.walkPosition.addScaledVector(forward, WALK_MOVE_SPEED * dt);
       if (this.walkKeysDown.has('KeyS')) this.walkPosition.addScaledVector(forward, -WALK_MOVE_SPEED * dt);
+      if (this.walkKeysDown.has('KeyD')) this.walkPosition.addScaledVector(right, WALK_MOVE_SPEED * dt);
+      if (this.walkKeysDown.has('KeyA')) this.walkPosition.addScaledVector(right, -WALK_MOVE_SPEED * dt);
       // Flat ground: eye height never changes with horizontal movement.
       this.walkPosition.y = WALK_EYE_HEIGHT;
     }
