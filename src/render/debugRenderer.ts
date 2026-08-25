@@ -66,6 +66,60 @@ function makeLeafTexture(): THREE.Texture {
   return texture;
 }
 
+/**
+ * Procedurally draws a tileable dirt/soil texture -- mottled earthy
+ * patches plus sparse small pebble flecks -- for walking mode's ground
+ * (see TreeDebugRenderer.enterWalkMode), the same load-time-canvas
+ * approach as makeLeafTexture above rather than an external image asset.
+ * Built lazily (only the first time walking mode is entered) since a
+ * session that never walks shouldn't pay for it.
+ */
+function makeDirtTexture(): THREE.Texture {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#6b4a30';
+  ctx.fillRect(0, 0, size, size);
+
+  // Mottled patches, both darker (damp/shadowed clumps) and lighter
+  // (drier/sun-bleached patches), scattered at random -- what actually
+  // reads as "dirt" rather than a flat color once tiled.
+  for (let i = 0; i < 900; i++) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const r = 2 + Math.random() * 9;
+    const darker = Math.random() < 0.55;
+    const shade = Math.random();
+    ctx.fillStyle = darker
+      ? `rgba(${40 + shade * 25}, ${28 + shade * 18}, ${16 + shade * 10}, ${0.12 + Math.random() * 0.22})`
+      : `rgba(${120 + shade * 40}, ${90 + shade * 30}, ${58 + shade * 22}, ${0.1 + Math.random() * 0.18})`;
+    ctx.beginPath();
+    ctx.ellipse(x, y, r, r * (0.55 + Math.random() * 0.6), Math.random() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Sparse small pebbles/grit -- desaturated gray flecks, much smaller
+  // and sparser than the soil mottling above.
+  for (let i = 0; i < 140; i++) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const r = 1 + Math.random() * 2.2;
+    ctx.fillStyle = `rgba(95, 88, 80, ${0.3 + Math.random() * 0.3})`;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
 export { COLOR_MODES };
 export type { ColorModeId };
 
@@ -106,6 +160,31 @@ export interface RenderTree {
 
 const SKELETON_RADIUS = 0.015; // meters, uniform line-like thickness when showThickness=false
 const UNIT_CYLINDER_SEGMENTS = 7; // low-poly: this can be rendered thousands of times over
+
+/** Ground plane side length, meters -- generous enough that walking mode
+ * (see enterWalkMode) has real room to roam before running out of
+ * modeled terrain, and the dirt texture's repeat count below is chosen
+ * to match. */
+const GROUND_SIZE = 300;
+/** Dirt texture tile size on the ground, meters -- how large one repeat
+ * of makeDirtTexture's pattern reads as once tiled. */
+const DIRT_TILE_SIZE = 3;
+
+/** Eye height above the (flat) ground while walking, meters. */
+const WALK_EYE_HEIGHT = 1.7;
+/** Walking speed, meters/second. */
+const WALK_MOVE_SPEED = 4.5;
+/** A/D keyboard turn rate, radians/second -- see enterWalkMode's own doc
+ * for why A/D turns the view rather than strafing. */
+const WALK_TURN_SPEED = 1.8;
+/** Mouse-look sensitivity, radians of yaw/pitch per pixel of mouse movement. */
+const WALK_MOUSE_SENSITIVITY = 0.0022;
+/** How close to straight up/down mouse-look pitch is allowed to get,
+ * radians short of vertical -- never quite lets the horizon flip. */
+const WALK_PITCH_LIMIT = Math.PI / 2 - 0.05;
+/** Physical keys walking mode tracks; anything else passes through to the
+ * page normally (so, e.g., a stray keypress doesn't get swallowed). */
+const WALK_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD']);
 
 /**
  * A three.js debug renderer for a single TreeState snapshot. Deliberately
@@ -167,6 +246,15 @@ export class TreeDebugRenderer {
   private sunLight: THREE.DirectionalLight;
   private sunTarget = new THREE.Object3D();
   private ground: THREE.Mesh;
+  private grid: THREE.GridHelper;
+  /** The everyday translucent-green, root-revealing ground material (see
+   * its own doc at construction) vs. walking mode's opaque dirt one --
+   * swapped on the same `ground` mesh rather than rebuilding it, since
+   * neither the geometry nor its position/rotation ever differ. */
+  private groundMaterialNormal: THREE.MeshStandardMaterial;
+  /** Built lazily on first entering walking mode (see makeDirtTexture) --
+   * a session that never walks shouldn't pay for the canvas work. */
+  private groundMaterialDirt: THREE.MeshStandardMaterial | null = null;
   /** Tracks the current scene's approximate size/center (set by frame()/
    * frameForest()) so the sun's shadow camera frustum can be sized to
    * just cover it -- an orthographic shadow camera sized for the whole
@@ -184,6 +272,23 @@ export class TreeDebugRenderer {
 
   /** Set this to receive hover updates; called with null when nothing is under the pointer. */
   onHover: ((info: HoverInfo | null) => void) | null = null;
+  /** Called whenever walking mode starts or stops -- including an exit
+   * the host page didn't itself trigger (pressing Escape releases pointer
+   * lock, which this renderer treats as "leave walking mode"; see the
+   * pointerlockchange listener in the constructor) -- so a host UI can
+   * keep its own panels/overlay in sync regardless of how it ended. */
+  onWalkModeChange: ((active: boolean) => void) | null = null;
+
+  private walkActive = false;
+  private walkAnimationFrame: number | null = null;
+  private walkKeysDown = new Set<string>();
+  private walkYaw = 0;
+  private walkPitch = 0;
+  private walkPosition = new THREE.Vector3(0, WALK_EYE_HEIGHT, 0);
+  private walkLastTime = 0;
+  /** Snapshot to restore on exit: the orbit camera pose and color mode
+   * walking mode temporarily overrides. */
+  private preWalk: { colorMode: ColorModeId; cameraPosition: THREE.Vector3; controlsTarget: THREE.Vector3 } | null = null;
 
   constructor(private container: HTMLElement) {
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.05, 2000);
@@ -214,27 +319,41 @@ export class TreeDebugRenderer {
     this.scene.add(this.sunTarget);
     this.sunLight.target = this.sunTarget;
 
-    this.ground = new THREE.Mesh(
-      new THREE.CircleGeometry(60, 48),
-      // Semi-transparent, and depthWrite:false, so the below-ground root
-      // system actually renders through it (a literal opaque disc would
-      // otherwise fully occlude every root, and even a naively-transparent
-      // one would still write depth and z-fight/hide what's behind it) --
-      // reads as a soil tint over the roots rather than a true cutaway,
-      // which is enough to see the root system's shape without a much
-      // more involved clip-plane/cutaway renderer.
-      new THREE.MeshStandardMaterial({ color: '#6f8f5c', roughness: 1, transparent: true, opacity: 0.55, depthWrite: false })
-    );
+    // Semi-transparent, and depthWrite:false, so the below-ground root
+    // system actually renders through it (a literal opaque disc would
+    // otherwise fully occlude every root, and even a naively-transparent
+    // one would still write depth and z-fight/hide what's behind it) --
+    // reads as a soil tint over the roots rather than a true cutaway,
+    // which is enough to see the root system's shape without a much
+    // more involved clip-plane/cutaway renderer. Walking mode (see
+    // enterWalkMode) swaps this for an opaque dirt-textured material --
+    // there's no root system to reveal from ground level, and real dirt
+    // has no reason to be see-through.
+    this.groundMaterialNormal = new THREE.MeshStandardMaterial({
+      color: '#6f8f5c',
+      roughness: 1,
+      transparent: true,
+      opacity: 0.55,
+      depthWrite: false,
+    });
+    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE), this.groundMaterialNormal);
     this.ground.renderOrder = 1; // draw after roots so its transparency blends over them, not the reverse
     this.ground.rotation.x = -Math.PI / 2;
     this.scene.add(this.ground);
-    const grid = new THREE.GridHelper(60, 60, '#3f5a35', '#557a48');
-    (grid.material as THREE.Material).transparent = true;
-    (grid.material as THREE.Material).opacity = 0.35;
-    this.scene.add(grid);
+    this.grid = new THREE.GridHelper(GROUND_SIZE, GROUND_SIZE / 3, '#3f5a35', '#557a48');
+    (this.grid.material as THREE.Material).transparent = true;
+    (this.grid.material as THREE.Material).opacity = 0.35;
+    this.scene.add(this.grid);
 
     this.renderer.domElement.addEventListener('pointermove', this.handlePointerMove);
     this.renderer.domElement.addEventListener('pointerleave', () => this.onHover?.(null));
+    // Escape (or any other browser-driven pointer-unlock) always means
+    // "leave walking mode" -- see onWalkModeChange's own doc for why this
+    // listener, not the explicit exitWalkMode() call site, is the one
+    // source of truth for "walking mode just ended".
+    document.addEventListener('pointerlockchange', () => {
+      if (this.walkActive && document.pointerLockElement !== this.renderer.domElement) this.exitWalkMode();
+    });
 
     this.updateShadowCamera();
     this.resize();
@@ -343,6 +462,161 @@ export class TreeDebugRenderer {
     this.renderer.setSize(clientWidth, clientHeight);
     this.render();
   }
+
+  isWalking(): boolean {
+    return this.walkActive;
+  }
+
+  /**
+   * Enters an immersive first-person "walking simulator" view: orbit
+   * controls are disabled in favor of WASD + mouse-look, foliage/shadows
+   * switch to "photo" mode (real leaf-shaped shadows read far better up
+   * close than the debug point-cloud/skeleton modes), and the ground
+   * swaps from the analytic translucent-green disc to an opaque dirt
+   * texture (there's no root system to reveal from ground level, and a
+   * see-through ground would look wrong up close).
+   *
+   * Controls: W/S walk forward/backward along the current facing
+   * direction; A/D *turn* left/right (no strafing -- this is a classic
+   * turn-in-place scheme, not a modern six-directional FPS one) at a
+   * fixed angular rate; mouse movement (once pointer-locked, which this
+   * requests immediately -- must be called from a user-gesture handler,
+   * e.g. a button's click listener, for the browser to grant it) looks
+   * around freely in both yaw and pitch. Movement stays on the flat
+   * ground plane at a fixed eye height; there's no collision detection
+   * against trees or terrain relief (the ground is flat), so walking
+   * through a trunk is possible -- an acceptable simplification for a
+   * debug/showcase view rather than a game.
+   *
+   * Exits via exitWalkMode() (an explicit "Exit walking mode" button, at
+   * the host page's discretion) or automatically the moment pointer lock
+   * is released for any other reason (most commonly the user pressing
+   * Escape, which the browser itself intercepts to release pointer lock
+   * before this code ever sees the keystroke -- see the
+   * `pointerlockchange` listener in the constructor).
+   */
+  enterWalkMode(): void {
+    if (this.walkActive) return;
+    this.walkActive = true;
+
+    this.preWalk = {
+      colorMode: this.options.colorMode,
+      cameraPosition: this.camera.position.clone(),
+      controlsTarget: this.controls.target.clone(),
+    };
+    this.controls.enabled = false;
+    this.setOptions({ colorMode: 'photo' });
+
+    if (!this.groundMaterialDirt) {
+      const dirtTexture = makeDirtTexture();
+      const repeats = GROUND_SIZE / DIRT_TILE_SIZE;
+      dirtTexture.repeat.set(repeats, repeats);
+      this.groundMaterialDirt = new THREE.MeshStandardMaterial({ map: dirtTexture, roughness: 1 });
+    }
+    this.ground.material = this.groundMaterialDirt;
+    this.grid.visible = false;
+
+    // Start roughly where the orbit camera already was (so entering feels
+    // continuous rather than an disorienting jump), at a fixed eye height
+    // and facing whichever way the orbit camera was already looking.
+    this.walkPosition.set(this.camera.position.x, WALK_EYE_HEIGHT, this.camera.position.z);
+    const lookDir = new THREE.Vector3();
+    this.camera.getWorldDirection(lookDir);
+    this.walkYaw = Math.atan2(-lookDir.x, -lookDir.z);
+    this.walkPitch = Math.max(-WALK_PITCH_LIMIT, Math.min(WALK_PITCH_LIMIT, Math.asin(Math.max(-1, Math.min(1, lookDir.y)))));
+    this.camera.position.copy(this.walkPosition);
+
+    this.walkKeysDown.clear();
+    window.addEventListener('keydown', this.handleWalkKeyDown);
+    window.addEventListener('keyup', this.handleWalkKeyUp);
+    document.addEventListener('mousemove', this.handleWalkMouseMove);
+    this.renderer.domElement.requestPointerLock();
+
+    this.walkLastTime = 0;
+    this.walkAnimationFrame = requestAnimationFrame(this.walkTick);
+    this.onWalkModeChange?.(true);
+  }
+
+  /** Leaves walking mode, restoring the orbit camera's pre-walk pose,
+   * color mode, and the analytic ground/grid. Safe to call even if
+   * walking mode isn't active (a no-op). See enterWalkMode's own doc for
+   * the ways this can be triggered. */
+  exitWalkMode(): void {
+    if (!this.walkActive) return;
+    this.walkActive = false;
+
+    if (this.walkAnimationFrame !== null) {
+      cancelAnimationFrame(this.walkAnimationFrame);
+      this.walkAnimationFrame = null;
+    }
+    window.removeEventListener('keydown', this.handleWalkKeyDown);
+    window.removeEventListener('keyup', this.handleWalkKeyUp);
+    document.removeEventListener('mousemove', this.handleWalkMouseMove);
+    this.walkKeysDown.clear();
+    if (document.pointerLockElement === this.renderer.domElement) document.exitPointerLock();
+
+    this.ground.material = this.groundMaterialNormal;
+    this.grid.visible = true;
+
+    if (this.preWalk) {
+      this.setOptions({ colorMode: this.preWalk.colorMode });
+      this.camera.position.copy(this.preWalk.cameraPosition);
+      this.controls.target.copy(this.preWalk.controlsTarget);
+      this.preWalk = null;
+    }
+    this.controls.enabled = true;
+    this.controls.update();
+    this.render();
+    this.onWalkModeChange?.(false);
+  }
+
+  private handleWalkKeyDown = (e: KeyboardEvent): void => {
+    if (!WALK_KEYS.has(e.code)) return;
+    this.walkKeysDown.add(e.code);
+    e.preventDefault();
+  };
+
+  private handleWalkKeyUp = (e: KeyboardEvent): void => {
+    if (!WALK_KEYS.has(e.code)) return;
+    this.walkKeysDown.delete(e.code);
+    e.preventDefault();
+  };
+
+  /** Only actually looks around while pointer-locked (the browser only
+   * dispatches movementX/movementY-bearing mousemove events during
+   * pointer lock in the first place, so this guard is mostly documentary,
+   * but it also means an accidental stray mousemove right at exit can't
+   * apply a spurious look delta). */
+  private handleWalkMouseMove = (e: MouseEvent): void => {
+    if (!this.walkActive || document.pointerLockElement !== this.renderer.domElement) return;
+    this.walkYaw -= e.movementX * WALK_MOUSE_SENSITIVITY;
+    this.walkPitch = Math.max(-WALK_PITCH_LIMIT, Math.min(WALK_PITCH_LIMIT, this.walkPitch - e.movementY * WALK_MOUSE_SENSITIVITY));
+  };
+
+  private walkTick = (time: number): void => {
+    if (!this.walkActive) return;
+    const dt = this.walkLastTime ? Math.min(0.1, (time - this.walkLastTime) / 1000) : 0;
+    this.walkLastTime = time;
+
+    if (this.walkKeysDown.has('KeyA')) this.walkYaw += WALK_TURN_SPEED * dt;
+    if (this.walkKeysDown.has('KeyD')) this.walkYaw -= WALK_TURN_SPEED * dt;
+
+    this.camera.quaternion.setFromEuler(new THREE.Euler(this.walkPitch, this.walkYaw, 0, 'YXZ'));
+
+    if (this.walkKeysDown.has('KeyW') || this.walkKeysDown.has('KeyS')) {
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+      forward.y = 0;
+      forward.normalize();
+      if (this.walkKeysDown.has('KeyW')) this.walkPosition.addScaledVector(forward, WALK_MOVE_SPEED * dt);
+      if (this.walkKeysDown.has('KeyS')) this.walkPosition.addScaledVector(forward, -WALK_MOVE_SPEED * dt);
+      // Flat ground: eye height never changes with horizontal movement.
+      this.walkPosition.y = WALK_EYE_HEIGHT;
+    }
+
+    this.camera.position.copy(this.walkPosition);
+    this.render();
+    this.walkAnimationFrame = requestAnimationFrame(this.walkTick);
+  };
 
   setOptions(partial: Partial<DebugRendererOptions>): void {
     this.options = { ...this.options, ...partial };
@@ -548,6 +822,7 @@ export class TreeDebugRenderer {
   }
 
   dispose(): void {
+    this.exitWalkMode();
     this.renderer.dispose();
     this.branchGeometry.dispose();
     this.leafGeometry.dispose();
@@ -556,5 +831,8 @@ export class TreeDebugRenderer {
     this.leafPhotoGeometry.dispose();
     this.leafPhotoMaterial.dispose();
     this.leafTexture.dispose();
+    this.groundMaterialNormal.dispose();
+    this.groundMaterialDirt?.map?.dispose();
+    this.groundMaterialDirt?.dispose();
   }
 }

@@ -44,6 +44,12 @@ const forestReproductionInput = document.getElementById('forest-reproduction-inp
 const forestDispersalInput = document.getElementById('forest-dispersal-input') as HTMLInputElement;
 const forestSimulateBtn = document.getElementById('forest-simulate-btn') as HTMLButtonElement;
 const deathLog = document.getElementById('death-log') as HTMLDivElement;
+const walkBtn = document.getElementById('walk-btn') as HTMLButtonElement;
+const exitWalkBtn = document.getElementById('exit-walk-btn') as HTMLButtonElement;
+const walkOverlay = document.getElementById('walk-overlay') as HTMLDivElement;
+const walkCrosshair = document.getElementById('walk-crosshair') as HTMLDivElement;
+const controlsPanel = document.getElementById('controls') as HTMLDivElement;
+const scrubberBar = document.getElementById('scrubber-bar') as HTMLDivElement;
 
 const renderer = new TreeDebugRenderer(canvasContainer);
 
@@ -263,6 +269,7 @@ function loadForestHistory(h: ForestHistory): void {
   );
   renderer.setSunDirection(sunDirection(h.params));
   showAtIndex(lastIndex);
+  walkBtn.disabled = false;
 }
 
 async function simulate(params: SimulationParams, years: number): Promise<void> {
@@ -456,13 +463,41 @@ function formatHover(info: HoverInfo): string {
 }
 
 renderer.onHover = (info) => {
-  if (!info) {
+  // No hover tooltip while walking -- there's no pointer to hover with
+  // (the mouse is pointer-locked and driving look direction instead),
+  // and the whole analytic UI (including this tooltip) is hidden anyway.
+  if (renderer.isWalking() || !info) {
     tooltip.style.display = 'none';
     return;
   }
   tooltip.style.display = 'block';
   tooltip.textContent = formatHover(info);
 };
+
+// --- Walking mode: an immersive first-person view of a generated forest.
+// Most of the analytic UI (the whole controls panel and scrubber bar)
+// hides while walking; see TreeDebugRenderer.enterWalkMode's own doc for
+// the WASD-turn/mouse-look control scheme and how/when it exits.
+function setWalkUiVisible(walking: boolean): void {
+  controlsPanel.style.display = walking ? 'none' : '';
+  scrubberBar.style.display = walking ? 'none' : '';
+  walkOverlay.style.display = walking ? 'block' : 'none';
+  walkCrosshair.style.display = walking ? 'block' : 'none';
+  if (walking) tooltip.style.display = 'none';
+}
+
+walkBtn.addEventListener('click', () => {
+  if (!forestHistory) return;
+  stopPlayback();
+  renderer.enterWalkMode();
+});
+exitWalkBtn.addEventListener('click', () => renderer.exitWalkMode());
+// onWalkModeChange (not just these two click handlers) is the single
+// source of truth for UI visibility: walking mode can also end on its
+// own (pressing Escape releases pointer lock, which the renderer treats
+// as "leave walking mode" -- see its own doc), and the UI needs to sync
+// to that just as much as to an explicit button click.
+renderer.onWalkModeChange = (active) => setWalkUiVisible(active);
 
 updateLegend();
 void simulate({ ...defaultParams, ...paramOverrides, seed: Number(seedInput.value) || 1 }, Number(yearsInput.value) || 110);

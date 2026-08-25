@@ -229,6 +229,45 @@
         overflow-y: auto;
         margin-top: 4px;
       }
+      #walk-crosshair {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 18px;
+        height: 18px;
+        margin: -9px 0 0 -9px;
+        pointer-events: none;
+        z-index: 4;
+      }
+      #walk-crosshair::before,
+      #walk-crosshair::after {
+        content: '';
+        position: absolute;
+        background: rgba(255, 255, 255, 0.85);
+        box-shadow: 0 0 2px rgba(0, 0, 0, 0.6);
+      }
+      #walk-crosshair::before {
+        left: 8px;
+        top: 0;
+        width: 2px;
+        height: 18px;
+      }
+      #walk-crosshair::after {
+        top: 8px;
+        left: 0;
+        width: 18px;
+        height: 2px;
+      }
+      #walk-overlay {
+        bottom: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        text-align: center;
+        font-size: 12px;
+      }
+      #walk-overlay .row {
+        justify-content: center;
+      }
     </style>
   </head>
   <body>
@@ -295,6 +334,9 @@
             Every tree in the forest shares the one species &amp; environment parameter set below, and competes with its neighbors for light and root
             space -- see the README's "Forest simulation" section.
           </p>
+          <div class="row">
+            <button id="walk-btn" class="secondary" disabled>🚶 Walk through forest</button>
+          </div>
         </div>
 
         <details id="params-details" open>
@@ -348,6 +390,14 @@
       </div>
 
       <div id="tooltip" class="panel"></div>
+
+      <div id="walk-crosshair" style="display: none"></div>
+      <div id="walk-overlay" class="panel" style="display: none">
+        <div>W/S walk &nbsp;·&nbsp; A/D turn &nbsp;·&nbsp; mouse look</div>
+        <div class="row">
+          <button id="exit-walk-btn" class="secondary">Exit walking mode (Esc)</button>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

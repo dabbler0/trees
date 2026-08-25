@@ -709,6 +709,34 @@ whole population's bounding footprint rather than one tree centered at
 the origin; hovering shows which tree (`tree #N`) a segment/leaf belongs
 to whenever more than one tree is on screen.
 
+### Walking mode
+
+Once a forest has been grown, "🚶 Walk through forest" switches to an
+immersive first-person view (`TreeDebugRenderer.enterWalkMode`/
+`exitWalkMode`): the whole analytic UI (controls panel, scrubber, hover
+tooltip) hides in favor of a crosshair and a small "Exit walking mode"
+hint, the orbit camera is replaced by **WASD** movement -- **W/S** walk
+forward/backward, **A/D turn** left/right (a classic turn-in-place
+scheme, not strafing) -- plus free **mouse look** (pointer-locked on
+entry) for yaw/pitch, foliage switches to "photo" mode (real leaf-shaped
+shadows read far better up close than the debug point-cloud/skeleton
+modes), and the ground swaps from the analytic translucent-green disc to
+an opaque, tileable dirt texture (`makeDirtTexture`, procedurally drawn
+onto a canvas at first use, the same load-time-texture approach as
+`makeLeafTexture`) -- there's no root system to reveal from ground level,
+and real dirt has no reason to be see-through. Walking mode exits either
+via the explicit button or automatically the moment pointer lock is
+released for any other reason (pressing Escape is the common case; the
+browser itself intercepts that keystroke to release pointer lock before
+the page ever sees it, so exiting listens for the `pointerlockchange`
+event rather than the key itself). There's no collision detection against
+trunks or terrain relief (the ground is flat) -- an acceptable
+simplification for a showcase view rather than a game. Frame rate depends
+on how heavy the current forest/photo-mode load is, the same tradeoff
+photo mode always carried; a large, densely-treed forest walked
+continuously is a heavier sustained load than photo mode's usual
+occasional re-render on camera drag.
+
 ## Renderer
 
 `TreeDebugRenderer` draws one `TreeState` at a time via two
