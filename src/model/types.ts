@@ -535,8 +535,13 @@ export interface ForestParams {
    */
   maxTrees: number;
   /** A tree becomes reproductively mature (starts rolling for seed
-   * dispersal each year) once its own height reaches this, meters. */
-  maturityHeight: number;
+   * dispersal each year) once its own age reaches this, years -- an
+   * explicit age threshold rather than a height-triggered one, since real
+   * silvics literature reports reproductive maturity by age (pioneer
+   * species like birch/poplar commonly ~5-10 years; slower, longer-lived
+   * hardwoods like oak/beech commonly ~20-30 years) rather than by a
+   * fraction of eventual mature height. */
+  maturityAge: number;
   /** Per-mature-tree, per-forest-year probability of a seed-dispersal event. */
   reproductionProbability: number;
   /** Seeds scattered per successful dispersal event. */

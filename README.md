@@ -667,8 +667,12 @@ section) and `src/sim/forest.ts` for the full design reasoning; in brief:
   same Beer-Lambert shape as light, just without a preferred direction)
   driven only by *other* trees' roots sharing the same soil patch -- a
   lone tree's own roots, however dense, never self-throttle.
-- **Reproduction and scattering**: once a tree's own height passes
-  `maturityHeight`, it rolls each year for a seed-dispersal event
+- **Reproduction and scattering**: once a tree's own age passes
+  `maturityAge` (an explicit age, not a height threshold -- default 20
+  years, a generic-broadleaf middle ground between the ~5-10 years
+  commonly cited for fast pioneer species like birch/poplar and the
+  ~20-30 years commonly cited for slower, longer-lived hardwoods like
+  oak/beech), it rolls each year for a seed-dispersal event
   (`reproductionProbability`); each seed lands at a random point within
   `seedDispersalRadius` of the parent and only actually germinates into a
   new tree if it clears `minTreeSpacing` from every existing tree and the

@@ -126,7 +126,7 @@ export function runForestSimulation(params: SimulationParams, forestParams: Fore
     const occupied = (): readonly ForestTree[] => [...survivors, ...newTrees];
     for (const parent of survivors) {
       if (occupied().length >= forestParams.maxTrees) break;
-      if (parent.state.metrics.height < forestParams.maturityHeight) continue;
+      if (parent.state.year < forestParams.maturityAge) continue;
       if (forestRng() >= forestParams.reproductionProbability) continue;
       for (let i = 0; i < forestParams.seedsPerEvent; i++) {
         if (occupied().length >= forestParams.maxTrees) break;

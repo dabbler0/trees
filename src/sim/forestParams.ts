@@ -10,13 +10,14 @@ import type { ForestParams } from '../model/types';
 export const defaultForestParams: ForestParams = {
   years: 120,
   maxTrees: 25,
-  // A tree's own heightVigorHalfHeight (species-dependent, default 18m)
-  // sets its ultimate mature height; reproductive maturity in real trees
-  // typically arrives well before full structural maturity (a real oak
-  // starts masting at a fraction of its eventual old-growth height) --
-  // roughly a third of the way to the hydraulic-limitation half-height is
-  // a reasonable stand-in.
-  maturityHeight: 6,
+  // An explicit age, not tied to the species' own height parameters.
+  // Real reproductive-maturity ages vary widely by species -- fast
+  // pioneers (birch, poplar, willow) commonly reach it in ~5-10 years,
+  // while slower, longer-lived hardwoods (oak, beech) are commonly cited
+  // at ~20-30 years to a first significant seed crop -- so this sits at a
+  // generic-broadleaf middle ground between those two real ranges rather
+  // than favoring either.
+  maturityAge: 20,
   // A modest per-tree annual chance once mature -- real mast years are
   // irregular and most seed crops fail to establish at all, which the
   // germination-light-threshold and min-spacing checks below handle
