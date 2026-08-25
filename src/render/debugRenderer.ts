@@ -286,6 +286,13 @@ export class TreeDebugRenderer {
    * pointerlockchange listener in the constructor) -- so a host UI can
    * keep its own panels/overlay in sync regardless of how it ended. */
   onWalkModeChange: ((active: boolean) => void) | null = null;
+  /** Called when the GPU context is forcibly reclaimed (see the
+   * `webglcontextlost` listener in the constructor) and again once it's
+   * been restored -- a host UI can use these to show/clear a "recovering"
+   * message. Rendering itself pauses and resumes automatically either
+   * way; these are purely for user-facing feedback. */
+  onContextLost: (() => void) | null = null;
+  onContextRestored: (() => void) | null = null;
 
   private walkActive = false;
   private walkAnimationFrame: number | null = null;
@@ -367,6 +374,40 @@ export class TreeDebugRenderer {
     // source of truth for "walking mode just ended".
     document.addEventListener('pointerlockchange', () => {
       if (this.walkActive && document.pointerLockElement !== this.renderer.domElement) this.exitWalkMode();
+    });
+
+    // A "WebGL context lost" event is the browser/GPU driver forcibly
+    // reclaiming this context, most commonly because too much GPU memory
+    // has been allocated (disposeMesh's own doc explains the leak this
+    // app used to have) or the OS/driver is under memory pressure and
+    // decided this context was the one to sacrifice. calling
+    // preventDefault() here is required -- without it the browser treats
+    // the loss as permanent and never fires 'webglcontextrestored' at
+    // all, leaving the canvas a dead black rectangle forever instead of
+    // recovering.
+    this.renderer.domElement.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      if (this.walkAnimationFrame !== null) {
+        cancelAnimationFrame(this.walkAnimationFrame);
+        this.walkAnimationFrame = null;
+      }
+      this.onContextLost?.();
+    });
+    this.renderer.domElement.addEventListener('webglcontextrestored', () => {
+      // three.js re-creates the underlying GL objects for geometries/
+      // materials on their next use automatically, but a texture's own
+      // pixel data isn't retained GPU-side across a context loss and
+      // needs an explicit needsUpdate to actually get re-uploaded to the
+      // new context.
+      this.leafTexture.needsUpdate = true;
+      if (this.groundMaterialDirt?.map) this.groundMaterialDirt.map.needsUpdate = true;
+      if (this.currentTrees.length > 0) this.rebuild(this.currentTrees);
+      if (this.walkActive) {
+        this.walkLastTime = 0;
+        this.walkAnimationFrame = requestAnimationFrame(this.walkTick);
+      }
+      this.render();
+      this.onContextRestored?.();
     });
 
     this.updateShadowCamera();
@@ -678,8 +719,23 @@ export class TreeDebugRenderer {
     this.render();
   }
 
+  /** Removing a mesh from the scene alone does *not* free its GPU-side
+   * buffers (its instance transform/color attributes) -- three.js only
+   * releases those when told to via .dispose(), which fires the internal
+   * 'dispose' event WebGLRenderer listens for. rebuild() replaces the
+   * branch/leaf InstancedMesh on every scrub, every setOptions() toggle,
+   * and every forest-generation live-follow update, so skipping this was
+   * a real, unbounded GPU-memory leak -- every rebuild piled another
+   * abandoned mesh's buffers onto the GPU without ever freeing the last
+   * one, which is exactly the kind of thing that eventually exhausts
+   * driver memory and gets the whole context forcibly reclaimed (a
+   * "WebGL context lost" crash). The shared branchGeometry/leafGeometry/
+   * materials (see the constructor) are untouched here -- only this
+   * mesh's own instance buffers are freed. */
   private disposeMesh(mesh: THREE.InstancedMesh | null): void {
-    if (mesh) this.scene.remove(mesh);
+    if (!mesh) return;
+    this.scene.remove(mesh);
+    mesh.dispose();
   }
 
   private rebuild(trees: readonly RenderTree[]): void {

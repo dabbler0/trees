@@ -843,6 +843,42 @@ blob ones, with no extra work beyond setting `alphaTest`. Every other
 color mode leaves `castShadow`/`receiveShadow` off, so switching into
 photo mode is the only time this costs anything.
 
+**GPU resource management / WebGL context loss.** `rebuild()` replaces
+the branch/leaf `InstancedMesh` on every scrub, every `setOptions()`
+toggle (thickness/leaves/color mode), and every forest-generation
+live-follow update -- potentially dozens of times in one session.
+`disposeMesh()` used to just call `scene.remove(mesh)`, which drops the
+JS reference but does *not* free the mesh's own GPU-side buffers
+(`instanceMatrix`/`instanceColor`) -- three.js only releases those when
+told to via `.dispose()`, which fires the internal `'dispose'` event
+`WebGLRenderer` listens for. Skipping that was a real, unbounded GPU
+memory leak: every rebuild piled another abandoned mesh's buffers onto
+the GPU without ever freeing the last one, which is exactly the kind of
+thing that eventually exhausts driver memory and gets the whole context
+forcibly reclaimed by the browser (a "WebGL context lost" crash -- the
+GPU driver's own protective mechanism, not a JS exception; once it
+fires, every further GL call on that context is a no-op until it's
+explicitly restored). `disposeMesh()` now calls `mesh.dispose()` too.
+(The shared `branchGeometry`/`leafGeometry`/materials, created once in
+the constructor, are untouched by any of this -- only each discarded
+mesh's own instance buffers are freed.)
+
+As defense in depth against the *other* real causes of context loss (the
+GPU driver hiccups, another tab hogs VRAM, a low-memory device) --
+independent of whether this app itself is leaking -- the constructor also
+listens for `webglcontextlost`/`webglcontextrestored`. `preventDefault()`
+on the loss event is required: without it the browser treats the loss as
+permanent and never fires the restore event at all. On loss, any running
+walking-mode render loop is stopped; on restore, textures built from
+canvas data (`leafTexture`, the dirt ground texture) are marked
+`needsUpdate` (their pixel data isn't retained GPU-side across a context
+loss the way three.js's own automatic GL-object re-creation handles
+geometries/materials), the current scene is rebuilt, and rendering
+resumes. `onContextLost`/`onContextRestored` let a host page show/clear a
+"recovering" message (see `main.ts`) -- verified by manually triggering a
+loss/restore cycle via the standard `WEBGL_lose_context` testing
+extension and confirming the tree re-renders correctly afterward.
+
 Hover picking is wired through `renderer.onHover(info)`, which receives
 the full underlying `BranchSegment`/`Bud` or `Leaf` object (not a
 pre-formatted string) so new debug information is easy to surface without

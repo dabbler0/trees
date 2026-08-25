@@ -604,5 +604,13 @@ exitWalkBtn.addEventListener('click', () => renderer.exitWalkMode());
 // to that just as much as to an explicit button click.
 renderer.onWalkModeChange = (active) => setWalkUiVisible(active);
 
+// A lost WebGL context is the browser/GPU driver forcibly reclaiming the
+// canvas (see disposeMesh's own doc in debugRenderer.ts for the leak that
+// used to make this likely) -- rendering itself pauses and, once the
+// browser fires 'webglcontextrestored', resumes automatically; this is
+// purely user-facing feedback in the meantime.
+renderer.onContextLost = () => setStatus('Graphics context lost -- attempting to recover…');
+renderer.onContextRestored = () => setStatus(null);
+
 updateLegend();
 void simulate({ ...defaultParams, ...paramOverrides, seed: Number(seedInput.value) || 1 }, Number(yearsInput.value) || 110);
