@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Terrain Erosion Prototype</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14171c;
+    --panel: #1c2129;
+    --panel-2: #232a34;
+    --border: #333c48;
+    --text: #dfe4ea;
+    --text-dim: #8b95a3;
+    --accent: #5fb3ff;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  body { display: flex; flex-direction: column; }
+  header {
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 12px; flex-shrink: 0;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header p { margin: 0; color: var(--text-dim); font-size: 12px; }
+  .layout { display: flex; flex: 1; min-height: 0; }
+  #sidebar {
+    width: 320px; flex-shrink: 0; overflow-y: auto; padding: 12px;
+    border-right: 1px solid var(--border); background: var(--panel);
+  }
+  #main {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: flex-start; padding: 16px; gap: 12px; overflow: auto;
+  }
+  fieldset {
+    border: 1px solid var(--border); border-radius: 8px; margin: 0 0 12px 0;
+    padding: 10px 10px 12px; background: var(--panel-2);
+  }
+  legend { padding: 0 6px; color: var(--accent); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .row label { flex: 1 1 auto; color: var(--text-dim); font-size: 12px; }
+  .row input[type=range] { flex: 1 1 auto; width: 120px; }
+  .row .val { width: 46px; text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; }
+  .row select, .row input[type=number], .row input[type=text] {
+    background: #10141a; color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 3px 6px; font-size: 12px;
+  }
+  .row input[type=checkbox] { transform: scale(1.1); }
+  .btnrow { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+  button {
+    background: #2a3340; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+  }
+  button:hover { background: #354152; }
+  button.primary { background: var(--accent); color: #0a1420; border-color: var(--accent); font-weight: 600; }
+  button.primary:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .45; cursor: default; }
+  #canvasWrap { position: relative; }
+  canvas#view {
+    image-rendering: pixelated; image-rendering: crisp-edges;
+    border: 1px solid var(--border); border-radius: 4px; background: #000;
+    box-shadow: 0 8px 30px rgba(0,0,0,.4);
+  }
+  #scrubBar {
+    width: 100%; max-width: 720px; display: flex; flex-direction: column; gap: 4px;
+  }
+  #scrubBar .row { margin: 0; }
+  #stats {
+    max-width: 720px; width: 100%; display: flex; flex-wrap: wrap; gap: 4px 16px;
+    color: var(--text-dim); font-size: 11.5px; font-variant-numeric: tabular-nums;
+  }
+  #stats b { color: var(--text); font-weight: 600; }
+  .hint { color: var(--text-dim); font-size: 11px; margin: 4px 0 0; }
+  .legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🏔️ Terrain Erosion Prototype</h1>
+  <p>Noise-generated heightmap + simulated hydraulic (droplet) erosion. Separate proof-of-concept — not wired into the tree sim.</p>
+</header>
+<div class="layout">
+  <div id="sidebar">
+    <fieldset>
+      <legend>Terrain (noise)</legend>
+      <div class="row"><label for="seed">Seed</label>
+        <input id="seed" type="number" value="1" style="width:80px">
+        <button id="randSeed" title="Randomize seed">🎲</button>
+      </div>
+      <div class="row"><label for="gridSize">Resolution</label>
+        <select id="gridSize">
+          <option value="64">64²</option>
+          <option value="96">96²</option>
+          <option value="128" selected>128²</option>
+          <option value="160">160²</option>
+          <option value="192">192²</option>
+        </select>
+      </div>
+      <div class="row"><label for="scale">Feature scale</label>
+        <input id="scale" type="range" min="0.5" max="8" step="0.1" value="3">
+        <span class="val" id="scaleVal"></span></div>
+      <div class="row"><label for="octaves">Octaves</label>
+        <input id="octaves" type="range" min="1" max="8" step="1" value="5">
+        <span class="val" id="octavesVal"></span></div>
+      <div class="row"><label for="persistence">Persistence</label>
+        <input id="persistence" type="range" min="0.2" max="0.8" step="0.01" value="0.5">
+        <span class="val" id="persistenceVal"></span></div>
+      <div class="row"><label for="lacunarity">Lacunarity</label>
+        <input id="lacunarity" type="range" min="1.5" max="3" step="0.05" value="2">
+        <span class="val" id="lacunarityVal"></span></div>
+      <div class="row"><label for="ridged">Ridged (mountains)</label>
+        <input id="ridged" type="checkbox"></div>
+      <div class="row"><label for="island">Island falloff</label>
+        <input id="island" type="checkbox" checked></div>
+      <div class="btnrow"><button id="regenTerrain" class="primary">Regenerate terrain</button></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Erosion (droplets)</legend>
+      <div class="row"><label for="numDroplets">Droplet count</label>
+        <input id="numDroplets" type="range" min="0" max="150000" step="1000" value="40000">
+        <span class="val" id="numDropletsVal"></span></div>
+      <div class="row"><label for="lifetime">Max lifetime</label>
+        <input id="lifetime" type="range" min="10" max="120" step="1" value="40">
+        <span class="val" id="lifetimeVal"></span></div>
+      <div class="row"><label for="inertia">Inertia</label>
+        <input id="inertia" type="range" min="0" max="0.95" step="0.01" value="0.05">
+        <span class="val" id="inertiaVal"></span></div>
+      <div class="row"><label for="capacity">Capacity factor</label>
+        <input id="capacity" type="range" min="1" max="16" step="0.5" value="4">
+        <span class="val" id="capacityVal"></span></div>
+      <div class="row"><label for="minSlope">Min slope</label>
+        <input id="minSlope" type="range" min="0" max="0.05" step="0.001" value="0.01">
+        <span class="val" id="minSlopeVal"></span></div>
+      <div class="row"><label for="erodeSpeed">Erode speed</label>
+        <input id="erodeSpeed" type="range" min="0.05" max="1" step="0.01" value="0.3">
+        <span class="val" id="erodeSpeedVal"></span></div>
+      <div class="row"><label for="depositSpeed">Deposit speed</label>
+        <input id="depositSpeed" type="range" min="0.05" max="1" step="0.01" value="0.3">
+        <span class="val" id="depositSpeedVal"></span></div>
+      <div class="row"><label for="evaporate">Evaporation</label>
+        <input id="evaporate" type="range" min="0.005" max="0.2" step="0.005" value="0.02">
+        <span class="val" id="evaporateVal"></span></div>
+      <div class="row"><label for="gravity">Gravity</label>
+        <input id="gravity" type="range" min="1" max="20" step="0.5" value="4">
+        <span class="val" id="gravityVal"></span></div>
+      <div class="btnrow">
+        <button id="runErosion" class="primary">▶ Run erosion</button>
+        <button id="stopErosion" disabled>⏸ Pause</button>
+        <button id="resetErosion">↺ Reset to noise</button>
+      </div>
+      <p class="hint">Changing a slider mid-run does not retroactively change history; hit "Run erosion" again (from current state) to keep going with new params, or "Reset" first for a clean run.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>View</legend>
+      <div class="row"><label for="showRivers">River overlay</label>
+        <input id="showRivers" type="checkbox" checked></div>
+      <div class="row"><label for="riverStrength">River intensity</label>
+        <input id="riverStrength" type="range" min="0" max="3" step="0.05" value="1.2">
+        <span class="val" id="riverStrengthVal"></span></div>
+      <div class="row"><label for="hillshade">Hillshade strength</label>
+        <input id="hillshade" type="range" min="0" max="1" step="0.05" value="0.6">
+        <span class="val" id="hillshadeVal"></span></div>
+      <div class="row"><label for="colorMode">Palette</label>
+        <select id="colorMode">
+          <option value="terrain" selected>Terrain (biome tints)</option>
+          <option value="gray">Grayscale elevation</option>
+        </select>
+      </div>
+      <p class="hint">
+        <span class="legend-swatch" style="background:#2f6fb0"></span>water
+        <span class="legend-swatch" style="background:#d8cf9a"></span>sand
+        <span class="legend-swatch" style="background:#5b8f4f"></span>grass
+        <span class="legend-swatch" style="background:#7a7166"></span>rock
+        <span class="legend-swatch" style="background:#f2f2f2"></span>snow
+      </p>
+    </fieldset>
+  </div>
+
+  <div id="main">
+    <div id="canvasWrap"><canvas id="view" width="640" height="640"></canvas></div>
+    <div id="scrubBar">
+      <div class="row">
+        <label for="scrub" style="flex:0 0 auto;">History</label>
+        <input id="scrub" type="range" min="0" max="0" step="1" value="0" style="flex:1">
+        <button id="playHistory" style="flex:0 0 auto;">▶ Play</button>
+      </div>
+    </div>
+    <div id="stats"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------
+// Seeded PRNG (mulberry32) + Perlin-style gradient noise
+// ---------------------------------------------------------------------
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function makePerlin(seed) {
+  const rand = mulberry32(seed);
+  const perm = new Uint8Array(512);
+  const p = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) p[i] = i;
+  for (let i = 255; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const t = p[i]; p[i] = p[j]; p[j] = t;
+  }
+  for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
+
+  const grad2 = [[1,1],[-1,1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
+  function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+  function lerp(a, b, t) { return a + t * (b - a); }
+  function gradAt(hash, x, y) {
+    const g = grad2[hash & 7];
+    return g[0] * x + g[1] * y;
+  }
+  return function perlin(x, y) {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
+    const xf = x - Math.floor(x), yf = y - Math.floor(y);
+    const u = fade(xf), v = fade(yf);
+    const aa = perm[X + perm[Y]], ab = perm[X + perm[Y + 1]];
+    const ba = perm[X + 1 + perm[Y]], bb = perm[X + 1 + perm[Y + 1]];
+    const x1 = lerp(gradAt(aa, xf, yf), gradAt(ba, xf - 1, yf), u);
+    const x2 = lerp(gradAt(ab, xf, yf - 1), gradAt(bb, xf - 1, yf - 1), u);
+    return lerp(x1, x2, v); // roughly in [-1, 1]
+  };
+}
+
+function generateHeightmap(size, opts) {
+  const { seed, scale, octaves, persistence, lacunarity, ridged, island } = opts;
+  const perlin = makePerlin(seed);
+  const h = new Float32Array(size * size);
+  let min = Infinity, max = -Infinity;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let amp = 1, freq = scale / size, sum = 0, ampSum = 0;
+      for (let o = 0; o < octaves; o++) {
+        let n = perlin(x * freq, y * freq);
+        if (ridged) n = 1 - Math.abs(n);
+        sum += n * amp;
+        ampSum += amp;
+        amp *= persistence;
+        freq *= lacunarity;
+      }
+      let v = sum / ampSum;
+      if (!ridged) v = (v + 1) * 0.5; // [-1,1] -> [0,1]
+      if (island) {
+        const cx = (x / (size - 1)) * 2 - 1, cy = (y / (size - 1)) * 2 - 1;
+        const d = Math.sqrt(cx * cx + cy * cy) / Math.SQRT2; // 0 center -> 1 corner
+        const falloff = Math.max(0, 1 - Math.pow(d * 1.35, 3));
+        v *= falloff;
+      }
+      h[y * size + x] = v;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+  }
+  // renormalize to [0,1] so slider ranges behave predictably regardless of params
+  const range = Math.max(1e-6, max - min);
+  for (let i = 0; i < h.length; i++) h[i] = (h[i] - min) / range;
+  return h;
+}
+
+// ---------------------------------------------------------------------
+// Hydraulic erosion: droplet-based (Beyer/Lague-style) simulation
+// ---------------------------------------------------------------------
+function bilinear(map, size, x, y) {
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const x1 = Math.min(x0 + 1, size - 1), y1 = Math.min(y0 + 1, size - 1);
+  const fx = x - x0, fy = y - y0;
+  const h00 = map[y0 * size + x0], h10 = map[y0 * size + x1];
+  const h01 = map[y1 * size + x0], h11 = map[y1 * size + x1];
+  const top = h00 + (h10 - h00) * fx;
+  const bot = h01 + (h11 - h01) * fx;
+  return top + (bot - top) * fy;
+}
+
+function heightAndGradient(map, size, x, y) {
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const x1 = Math.min(x0 + 1, size - 1), y1 = Math.min(y0 + 1, size - 1);
+  const fx = x - x0, fy = y - y0;
+  const h00 = map[y0 * size + x0], h10 = map[y0 * size + x1];
+  const h01 = map[y1 * size + x0], h11 = map[y1 * size + x1];
+  const gx = (h10 - h00) * (1 - fy) + (h11 - h01) * fy;
+  const gy = (h01 - h00) * (1 - fx) + (h11 - h10) * fx;
+  const top = h00 + (h10 - h00) * fx;
+  const bot = h01 + (h11 - h01) * fx;
+  const height = top + (bot - top) * fy;
+  return { height, gx, gy };
+}
+
+function depositAt(map, size, x, y, amount) {
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const x1 = Math.min(x0 + 1, size - 1), y1 = Math.min(y0 + 1, size - 1);
+  const fx = x - x0, fy = y - y0;
+  map[y0 * size + x0] += amount * (1 - fx) * (1 - fy);
+  map[y0 * size + x1] += amount * fx * (1 - fy);
+  map[y1 * size + x0] += amount * (1 - fx) * fy;
+  map[y1 * size + x1] += amount * fx * fy;
+}
+
+function erodeAt(map, size, x, y, amount) {
+  // Same bilinear footprint as deposit, clamped so a cell can't go negative.
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const x1 = Math.min(x0 + 1, size - 1), y1 = Math.min(y0 + 1, size - 1);
+  const fx = x - x0, fy = y - y0;
+  const weights = [
+    [y0 * size + x0, (1 - fx) * (1 - fy)],
+    [y0 * size + x1, fx * (1 - fy)],
+    [y1 * size + x0, (1 - fx) * fy],
+    [y1 * size + x1, fx * fy],
+  ];
+  for (const [idx, w] of weights) {
+    const take = Math.min(map[idx], amount * w);
+    map[idx] -= take;
+  }
+}
+
+// Simulates `count` droplets on `map` (mutated in place: eroded/deposited
+// as each droplet flows downhill). The river overlay is computed
+// separately from the resulting terrain shape (see computeFlowAccumulation).
+function simulateDroplets(map, size, count, p, rand) {
+  for (let i = 0; i < count; i++) {
+    let x = rand() * (size - 1);
+    let y = rand() * (size - 1);
+    let dx = 0, dy = 0;
+    let speed = p.initialSpeed;
+    let water = p.initialWater;
+    let sediment = 0;
+
+    for (let step = 0; step < p.lifetime; step++) {
+      const { height: hOld, gx, gy } = heightAndGradient(map, size, x, y);
+
+      dx = dx * p.inertia - gx * (1 - p.inertia);
+      dy = dy * p.inertia - gy * (1 - p.inertia);
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 1e-8) {
+        const a = rand() * Math.PI * 2;
+        dx = Math.cos(a); dy = Math.sin(a);
+      } else {
+        dx /= len; dy /= len;
+      }
+
+      const newX = x + dx, newY = y + dy;
+      if (newX < 0 || newX >= size - 1 || newY < 0 || newY >= size - 1) break;
+
+      const hNew = bilinear(map, size, newX, newY);
+      const deltaHeight = hNew - hOld;
+
+      const capacity = Math.max(-deltaHeight, p.minSlope) * speed * water * p.capacityFactor;
+
+      if (deltaHeight > 0 || sediment > capacity) {
+        // Uphill, or carrying more than it can hold: drop sediment.
+        const amount = deltaHeight > 0
+          ? Math.min(deltaHeight, sediment)
+          : (sediment - capacity) * p.depositSpeed;
+        sediment -= amount;
+        depositAt(map, size, x, y, amount);
+      } else {
+        const amount = Math.min((capacity - sediment) * p.erodeSpeed, -deltaHeight);
+        erodeAt(map, size, x, y, amount);
+        sediment += amount;
+      }
+
+      speed = Math.sqrt(Math.max(0, speed * speed - deltaHeight * p.gravity));
+      water *= (1 - p.evaporate);
+      x = newX; y = newY;
+      if (water < 1e-3) break;
+    }
+  }
+}
+
+// Standard D8 flow accumulation on the *current* heightmap: every cell
+// starts owning 1 unit of drainage area and dumps it into its single
+// steepest-descent neighbor, processed from the highest cell down so
+// accumulation flows correctly downhill. This gives a clean dendritic
+// drainage network straight from the terrain's own shape -- a much
+// steadier "where are the rivers" signal than raw droplet visit counts,
+// which stay noisy/diffuse even after a long erosion run.
+const NEIGHBOR_OFFSETS = [[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]];
+function computeFlowAccumulation(map, size) {
+  const n = size * size;
+  const order = new Uint32Array(n);
+  for (let i = 0; i < n; i++) order[i] = i;
+  const orderArr = Array.from(order);
+  orderArr.sort((a, b) => map[b] - map[a]); // highest first
+
+  const flow = new Float32Array(n).fill(1);
+  for (const idx of orderArr) {
+    const x = idx % size, y = (idx / size) | 0;
+    let bestDrop = 0, bestIdx = -1;
+    for (const [dx, dy] of NEIGHBOR_OFFSETS) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || nx >= size || ny < 0 || ny >= size) continue;
+      const nIdx = ny * size + nx;
+      const drop = map[idx] - map[nIdx];
+      if (drop > bestDrop) { bestDrop = drop; bestIdx = nIdx; }
+    }
+    if (bestIdx >= 0) flow[bestIdx] += flow[idx];
+  }
+  return flow;
+}
+
+// ---------------------------------------------------------------------
+// App state
+// ---------------------------------------------------------------------
+const state = {
+  size: 128,
+  height: null,       // Float32Array, current (possibly eroded) heightmap
+  history: [],          // [{ dropletsSoFar, height: Float32Array }]
+  dropletsSoFar: 0,
+  targetDroplets: 0,
+  running: false,
+  rand: mulberry32(1),
+  rafId: null,
+  playTimer: null,
+};
+
+const $ = (id) => document.getElementById(id);
+
+const sliderIds = [
+  "scale", "octaves", "persistence", "lacunarity",
+  "numDroplets", "lifetime", "inertia", "capacity", "minSlope",
+  "erodeSpeed", "depositSpeed", "evaporate", "gravity",
+  "riverStrength", "hillshade",
+];
+function readParams() {
+  return {
+    seed: parseInt($("seed").value, 10) || 0,
+    scale: parseFloat($("scale").value),
+    octaves: parseInt($("octaves").value, 10),
+    persistence: parseFloat($("persistence").value),
+    lacunarity: parseFloat($("lacunarity").value),
+    ridged: $("ridged").checked,
+    island: $("island").checked,
+    numDroplets: parseInt($("numDroplets").value, 10),
+    lifetime: parseInt($("lifetime").value, 10),
+    inertia: parseFloat($("inertia").value),
+    capacityFactor: parseFloat($("capacity").value),
+    minSlope: parseFloat($("minSlope").value),
+    erodeSpeed: parseFloat($("erodeSpeed").value),
+    depositSpeed: parseFloat($("depositSpeed").value),
+    evaporate: parseFloat($("evaporate").value),
+    gravity: parseFloat($("gravity").value),
+    initialSpeed: 1,
+    initialWater: 1,
+  };
+}
+
+function syncValueLabels() {
+  for (const id of sliderIds) {
+    const el = $(id), out = $(id + "Val");
+    if (el && out) out.textContent = el.value;
+  }
+}
+sliderIds.forEach((id) => $(id).addEventListener("input", syncValueLabels));
+syncValueLabels();
+
+// ---------------------------------------------------------------------
+// Terrain generation / erosion orchestration
+// ---------------------------------------------------------------------
+function regenerateTerrain() {
+  stopSimLoop();
+  const p = readParams();
+  state.size = parseInt($("gridSize").value, 10);
+  state.height = generateHeightmap(state.size, p);
+  state.dropletsSoFar = 0;
+  state.rand = mulberry32((p.seed ^ 0x9e3779b9) >>> 0);
+  state.history = [snapshot()];
+  updateScrubRange();
+  setScrubIndex(0);
+  updateStats();
+}
+
+function resetErosionOnly() {
+  // Re-generate the same noise (same seed/params) but clear all erosion.
+  regenerateTerrain();
+}
+
+function snapshot() {
+  return {
+    dropletsSoFar: state.dropletsSoFar,
+    height: state.height.slice(),
+  };
+}
+
+const DROPLETS_PER_FRAME = 500;
+const SNAPSHOT_EVERY = 40; // one history frame per this many batches
+
+function stopSimLoop() {
+  state.running = false;
+  if (state.rafId) cancelAnimationFrame(state.rafId);
+  state.rafId = null;
+  $("runErosion").disabled = false;
+  $("stopErosion").disabled = true;
+}
+
+function runErosionStep() {
+  if (!state.running) return;
+  const p = readParams();
+  const remaining = state.targetDroplets - state.dropletsSoFar;
+  if (remaining <= 0) { stopSimLoop(); return; }
+  const batch = Math.min(DROPLETS_PER_FRAME, remaining);
+  simulateDroplets(state.height, state.size, batch, p, state.rand);
+  state.dropletsSoFar += batch;
+  state._batchesSinceSnapshot = (state._batchesSinceSnapshot || 0) + 1;
+
+  if (state._batchesSinceSnapshot >= SNAPSHOT_EVERY || state.dropletsSoFar >= state.targetDroplets) {
+    state._batchesSinceSnapshot = 0;
+    state.history.push(snapshot());
+    updateScrubRange();
+    setScrubIndex(state.history.length - 1);
+  }
+  updateStats();
+
+  if (state.dropletsSoFar < state.targetDroplets) {
+    state.rafId = requestAnimationFrame(runErosionStep);
+  } else {
+    stopSimLoop();
+  }
+}
+
+function startErosion() {
+  const p = readParams();
+  state.targetDroplets = state.dropletsSoFar + p.numDroplets;
+  if (p.numDroplets <= 0) return;
+  state.running = true;
+  $("runErosion").disabled = true;
+  $("stopErosion").disabled = false;
+  state.rafId = requestAnimationFrame(runErosionStep);
+}
+
+// ---------------------------------------------------------------------
+// Scrubber
+// ---------------------------------------------------------------------
+function updateScrubRange() {
+  $("scrub").max = String(Math.max(0, state.history.length - 1));
+}
+function setScrubIndex(i) {
+  $("scrub").value = String(i);
+  render(state.history[i]);
+}
+$("scrub").addEventListener("input", () => {
+  const i = parseInt($("scrub").value, 10);
+  render(state.history[i]);
+  updateStats(state.history[i]);
+});
+
+let playing = false;
+$("playHistory").addEventListener("click", () => {
+  playing = !playing;
+  $("playHistory").textContent = playing ? "⏸ Pause" : "▶ Play";
+  if (playing) {
+    clearInterval(state.playTimer);
+    state.playTimer = setInterval(() => {
+      let i = parseInt($("scrub").value, 10);
+      i = i + 1;
+      if (i > parseInt($("scrub").max, 10)) i = 0;
+      setScrubIndex(i);
+    }, 80);
+  } else {
+    clearInterval(state.playTimer);
+  }
+});
+
+// ---------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------
+const viewCanvas = $("view");
+const viewCtx = viewCanvas.getContext("2d");
+const offscreen = document.createElement("canvas");
+
+const PALETTE = [ // [heightStop, r, g, b]
+  [0.00, 0x14, 0x2a, 0x4a],
+  [0.30, 0x2f, 0x6f, 0xb0],
+  [0.34, 0xd8, 0xcf, 0x9a],
+  [0.40, 0x8f, 0xa8, 0x4a],
+  [0.55, 0x5b, 0x8f, 0x4f],
+  [0.72, 0x7a, 0x71, 0x66],
+  [0.86, 0x5c, 0x55, 0x4d],
+  [1.00, 0xf2, 0xf2, 0xf2],
+];
+function paletteColor(h) {
+  for (let i = 1; i < PALETTE.length; i++) {
+    if (h <= PALETTE[i][0] || i === PALETTE.length - 1) {
+      const a = PALETTE[i - 1], b = PALETTE[i];
+      const t = (h - a[0]) / Math.max(1e-6, b[0] - a[0]);
+      return [
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+        a[3] + (b[3] - a[3]) * t,
+      ];
+    }
+  }
+  return [255, 255, 255];
+}
+
+function render(frame) {
+  if (!frame) return;
+  const size = state.size;
+  const map = frame.height;
+  offscreen.width = size; offscreen.height = size;
+  const octx = offscreen.getContext("2d");
+  const img = octx.createImageData(size, size);
+  const data = img.data;
+
+  const hillshadeStrength = parseFloat($("hillshade").value);
+  const riverStrength = parseFloat($("riverStrength").value);
+  const showRivers = $("showRivers").checked;
+  const mode = $("colorMode").value;
+
+  // River intensity: log-compressed drainage area (D8 flow accumulation),
+  // normalized against a high percentile -- not the raw max -- so one
+  // outlet cell can't wash out every other channel, and only real
+  // convergent flow reads as a "river" rather than tinting every slope.
+  let flow = null, flowRef = 1e-6;
+  if (showRivers) {
+    flow = computeFlowAccumulation(map, size);
+    const logFlow = new Array(flow.length);
+    for (let i = 0; i < flow.length; i++) logFlow[i] = Math.log1p(flow[i]);
+    logFlow.sort((a, b) => a - b);
+    flowRef = Math.max(1e-6, logFlow[Math.floor(logFlow.length * 0.97)]);
+  }
+  function smoothstep(edge0, edge1, x) {
+    const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+    return t * t * (3 - 2 * t);
+  }
+
+  const lightDir = { x: -0.5, y: -0.7, z: 1 };
+  const lightLen = Math.sqrt(lightDir.x ** 2 + lightDir.y ** 2 + lightDir.z ** 2);
+  lightDir.x /= lightLen; lightDir.y /= lightLen; lightDir.z /= lightLen;
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const idx = y * size + x;
+      const h = map[idx];
+
+      const xL = map[idx - (x > 0 ? 1 : 0)];
+      const xR = map[idx + (x < size - 1 ? 1 : 0)];
+      const yU = map[idx - (y > 0 ? size : 0)];
+      const yD = map[idx + (y < size - 1 ? size : 0)];
+      const nx = (xL - xR) * size * 0.5;
+      const ny = (yU - yD) * size * 0.5;
+      const nz = 1.0;
+      const nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      let shade = (nx / nl) * lightDir.x + (ny / nl) * lightDir.y + (nz / nl) * lightDir.z;
+      shade = 0.5 + 0.5 * shade; // [0,1], soft
+      shade = 1 - hillshadeStrength + hillshadeStrength * shade;
+
+      let r, g, b;
+      if (mode === "gray") {
+        r = g = b = h * 255;
+      } else {
+        const c = paletteColor(h);
+        r = c[0]; g = c[1]; b = c[2];
+      }
+      r *= shade; g *= shade; b *= shade;
+
+      if (showRivers && h > 0.30) { // don't paint rivers over open water
+        const f = Math.log1p(flow[idx]) / flowRef;
+        const a = Math.min(1, smoothstep(0.45, 0.95, f) * riverStrength);
+        r = r * (1 - a) + 0x1c * a;
+        g = g * (1 - a) + 0x6f * a;
+        b = b * (1 - a) + 0xb8 * a;
+      }
+
+      const o = idx * 4;
+      data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+    }
+  }
+  octx.putImageData(img, 0, 0);
+  viewCtx.imageSmoothingEnabled = false;
+  viewCtx.clearRect(0, 0, viewCanvas.width, viewCanvas.height);
+  viewCtx.drawImage(offscreen, 0, 0, viewCanvas.width, viewCanvas.height);
+}
+
+function currentFrame() {
+  const i = parseInt($("scrub").value, 10);
+  return state.history[i] || state.history[state.history.length - 1];
+}
+
+function updateStats() {
+  const f = currentFrame();
+  if (!f) return;
+  let min = Infinity, max = -Infinity, sum = 0;
+  for (let i = 0; i < f.height.length; i++) {
+    const v = f.height[i];
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+  }
+  $("stats").innerHTML =
+    `<span>Grid: <b>${state.size}×${state.size}</b></span>` +
+    `<span>Droplets simulated: <b>${f.dropletsSoFar.toLocaleString()}</b></span>` +
+    `<span>History frames: <b>${state.history.length}</b></span>` +
+    `<span>Height range: <b>${min.toFixed(3)}–${max.toFixed(3)}</b></span>` +
+    `<span>Mean height: <b>${(sum / f.height.length).toFixed(3)}</b></span>`;
+}
+
+// ---------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------
+$("regenTerrain").addEventListener("click", regenerateTerrain);
+$("resetErosion").addEventListener("click", resetErosionOnly);
+$("randSeed").addEventListener("click", () => {
+  $("seed").value = String(Math.floor(Math.random() * 1e9));
+});
+$("runErosion").addEventListener("click", startErosion);
+$("stopErosion").addEventListener("click", stopSimLoop);
+$("gridSize").addEventListener("change", regenerateTerrain);
+["showRivers", "riverStrength", "hillshade", "colorMode"].forEach((id) => {
+  $(id).addEventListener("input", () => render(currentFrame()));
+});
+
+// Initial run.
+regenerateTerrain();
+</script>
+</body>
+</html>
