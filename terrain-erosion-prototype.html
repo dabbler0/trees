@@ -463,10 +463,12 @@ function computeFlowAccumulation(map, size) {
 // =======================================================================
 // Biome palette (shared by terrain vertex colors)
 // =======================================================================
-const SEA_LEVEL = 0.30; // must match the palette's water->sand stop below
+const SEA_LEVEL = 0.30; // ground below this is submerged; see the `water` mesh below --
+                          // it's the only thing that should read as "water", so the ground
+                          // palette stays a plain (dry-looking) lakebed/seabed tone under it.
 const PALETTE = [ // [heightStop, r, g, b] in 0-255
-  [0.00, 0x14, 0x2a, 0x4a],
-  [0.30, 0x2f, 0x6f, 0xb0],
+  [0.00, 0x30, 0x2c, 0x22],
+  [0.30, 0x59, 0x50, 0x3a],
   [0.34, 0xd8, 0xcf, 0x9a],
   [0.40, 0x8f, 0xa8, 0x4a],
   [0.55, 0x5b, 0x8f, 0x4f],
